@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/RayneDance/distributed-game-of-life/ratelimit"
 	"github.com/RayneDance/distributed-game-of-life/simulation"
 )
@@ -24,18 +23,34 @@ func NewRouter(limiter *ratelimit.Limiter, registry *simulation.Registry) *Route
 	}
 }
 
+// worldToChunkLocal converts an absolute world coordinate to a (chunk, local) pair
+// using floor-division semantics. This correctly handles negative coordinates:
+// Go's built-in % returns a negative remainder for negative dividends, so
+// e.g. -1 % 64 == -1 (not 63). We detect that case and adjust.
+func worldToChunkLocal(abs int64) (chunk int64, local uint8) {
+	chunk = abs / simulation.ChunkSize
+	rem := abs % simulation.ChunkSize
+	if abs < 0 && rem != 0 {
+		// Floor the chunk index and shift the remainder into [0, ChunkSize).
+		chunk--
+		rem += simulation.ChunkSize
+	}
+	local = uint8(rem)
+	return
+}
+
 // Route processes an incoming message.
-func (r *Router) Route(ctx context.Context, playerID string, msg IncomingMessage, conn *websocket.Conn) {
+func (r *Router) Route(ctx context.Context, playerID string, msg IncomingMessage, client *Client) {
 	switch msg.Type {
 	case "SPAWN":
 		// 1. Rate Limit Check
 		allowed, err := r.limiter.AllowMutation(ctx, playerID, time.Now().Unix())
 		if err != nil {
-			sendError(conn, "INTERNAL_ERROR", "Rate limiter unavailable")
+			sendError(client, "INTERNAL_ERROR", "Rate limiter unavailable")
 			return
 		}
 		if !allowed {
-			sendError(conn, "RATE_LIMITED", "You are sending commands too quickly")
+			sendError(client, "RATE_LIMITED", "You are sending commands too quickly")
 			return
 		}
 
@@ -43,39 +58,24 @@ func (r *Router) Route(ctx context.Context, playerID string, msg IncomingMessage
 		payloadBytes, _ := json.Marshal(msg.Payload)
 		var cmd SpawnCommand
 		if err := json.Unmarshal(payloadBytes, &cmd); err != nil {
-			sendError(conn, "INVALID_PAYLOAD", "Invalid spawn command format")
+			sendError(client, "INVALID_PAYLOAD", "Invalid spawn command format")
 			return
 		}
 
-		// 3. Route to Chunk Actor
-		chunkX := cmd.X / simulation.ChunkSize
-		chunkY := cmd.Y / simulation.ChunkSize
-		if cmd.X < 0 {
-			chunkX--
-		}
-		if cmd.Y < 0 {
-			chunkY--
-		}
-
-		localX := uint8(cmd.X % simulation.ChunkSize)
-		localY := uint8(cmd.Y % simulation.ChunkSize)
-		if cmd.X < 0 {
-			localX = uint8(simulation.ChunkSize + (cmd.X % simulation.ChunkSize))
-		}
-		if cmd.Y < 0 {
-			localY = uint8(simulation.ChunkSize + (cmd.Y % simulation.ChunkSize))
-		}
+		// 3. Route to Chunk Actor using correct floor-division coordinate mapping.
+		chunkX, localX := worldToChunkLocal(cmd.X)
+		chunkY, localY := worldToChunkLocal(cmd.Y)
 
 		actor := r.registry.GetOrCreate(simulation.ChunkID{X: chunkX, Y: chunkY})
 		actor.ProcessSpawn(ctx, localX, localY)
 
 		// Acknowledge success
-		conn.WriteJSON(OutgoingMessage{
-			Type: "SPAWN_ACK",
+		client.WriteJSON(OutgoingMessage{
+			Type:    "SPAWN_ACK",
 			Payload: cmd,
 		})
 
 	default:
-		sendError(conn, "UNKNOWN_COMMAND", "Command type not supported")
+		sendError(client, "UNKNOWN_COMMAND", "Command type not supported")
 	}
 }

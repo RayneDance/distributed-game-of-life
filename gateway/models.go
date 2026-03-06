@@ -1,7 +1,5 @@
 package gateway
 
-import "github.com/RayneDance/distributed-game-of-life/simulation"
-
 // IncomingMessage represents a raw WebSocket message from a client.
 type IncomingMessage struct {
 	Type    string      `json:"type"`

@@ -4,9 +4,25 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sync"
 
 	"github.com/gorilla/websocket"
 )
+
+// Client wraps a WebSocket connection with a write mutex.
+// gorilla/websocket explicitly prohibits concurrent writes, so all outgoing
+// messages must be serialised through WriteJSON.
+type Client struct {
+	conn *websocket.Conn
+	mu   sync.Mutex
+}
+
+// WriteJSON serialises v as JSON and writes it to the connection under the lock.
+func (c *Client) WriteJSON(v interface{}) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn.WriteJSON(v)
+}
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
@@ -24,6 +40,8 @@ func HandleWebSocket(router *Router) http.HandlerFunc {
 		}
 		defer conn.Close()
 
+		client := &Client{conn: conn}
+
 		// Extract player ID from header or query param. Using remote addr for POC.
 		playerID := r.RemoteAddr
 
@@ -36,17 +54,17 @@ func HandleWebSocket(router *Router) http.HandlerFunc {
 
 			var msg IncomingMessage
 			if err := json.Unmarshal(message, &msg); err != nil {
-				sendError(conn, "INVALID_FORMAT", "Message must be valid JSON")
+				sendError(client, "INVALID_FORMAT", "Message must be valid JSON")
 				continue
 			}
 
-			router.Route(r.Context(), playerID, msg, conn)
+			router.Route(r.Context(), playerID, msg, client)
 		}
 	}
 }
 
-func sendError(conn *websocket.Conn, code, message string) {
-	conn.WriteJSON(OutgoingMessage{
+func sendError(client *Client, code, message string) {
+	client.WriteJSON(OutgoingMessage{
 		Type: "ERROR",
 		Payload: ErrorPayload{
 			Code:    code,
