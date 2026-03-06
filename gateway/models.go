@@ -20,6 +20,21 @@ type PlaceShapeCommand struct {
 	Shape string `json:"shape"`
 }
 
+// CellOffset is a relative (dx, dy) offset used in PlaceCustomCommand.
+type CellOffset struct {
+	X int64 `json:"x"`
+	Y int64 `json:"y"`
+}
+
+// PlaceCustomCommand places an arbitrary client-defined pattern rooted at (X, Y).
+// Cells are (dx, dy) offsets from that root. The server validates bounds and
+// cell count before accepting the command.
+type PlaceCustomCommand struct {
+	X     int64        `json:"x"`
+	Y     int64        `json:"y"`
+	Cells []CellOffset `json:"cells"`
+}
+
 // SubscribeCommand lists chunks to add or remove from a client's viewport subscription.
 type SubscribeCommand struct {
 	Chunks []ChunkRef `json:"chunks"`

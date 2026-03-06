@@ -325,6 +325,242 @@
             color: #ff6666;
         }
 
+        #open-editor-btn {
+            display: block;
+            width: 100%;
+            margin-bottom: 6px;
+            padding: 5px;
+            border-radius: 5px;
+            border: 1px solid rgba(0, 170, 255, 0.25);
+            background: rgba(0, 170, 255, 0.07);
+            color: rgba(80, 200, 255, 0.7);
+            font-family: inherit;
+            font-size: 10px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        #open-editor-btn:hover {
+            background: rgba(0, 170, 255, 0.16);
+            border-color: rgba(0, 170, 255, 0.5);
+            color: #40d0ff;
+        }
+
+        /* ── Piece Editor Modal ───────────────────────────────────────── */
+        #piece-editor-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(4, 4, 14, 0.85);
+            backdrop-filter: blur(8px);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #piece-editor-overlay.open {
+            display: flex;
+        }
+
+        #piece-editor {
+            background: rgba(10, 10, 26, 0.97);
+            border: 1px solid rgba(0, 170, 255, 0.2);
+            border-radius: 14px;
+            box-shadow: 0 0 60px rgba(0, 170, 255, 0.12), 0 0 0 1px rgba(255, 255, 255, 0.04);
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            padding: 20px 22px;
+            max-width: 96vw;
+            max-height: 96vh;
+            overflow: auto;
+            animation: editorIn 0.18s ease;
+        }
+
+        @keyframes editorIn {
+            from {
+                opacity: 0;
+                transform: scale(0.96) translateY(6px);
+            }
+
+            to {
+                opacity: 1;
+                transform: scale(1) translateY(0);
+            }
+        }
+
+        #editor-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        #editor-header h3 {
+            font-size: 14px;
+            color: #40d0ff;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        #editor-close {
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            background: rgba(255, 255, 255, 0.04);
+            color: rgba(255, 255, 255, 0.55);
+            font-size: 16px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s ease;
+            font-family: inherit;
+            flex-shrink: 0;
+        }
+
+        #editor-close:hover {
+            background: rgba(255, 80, 80, 0.15);
+            border-color: rgba(255, 80, 80, 0.4);
+            color: #ff6666;
+        }
+
+        #editor-meta {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+        }
+
+        .editor-field label {
+            display: block;
+            font-size: 9px;
+            color: rgba(255, 255, 255, 0.35);
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .editor-field input {
+            width: 100%;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            color: #fff;
+            font-family: inherit;
+            font-size: 11px;
+            padding: 5px 8px;
+            outline: none;
+            transition: border-color 0.15s ease;
+        }
+
+        .editor-field input:focus {
+            border-color: rgba(0, 170, 255, 0.5);
+        }
+
+        #editor-canvas-wrap {
+            position: relative;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            border-radius: 8px;
+            cursor: crosshair;
+            /* fixed display size — scaled internally */
+            width: 500px;
+            height: 500px;
+            flex-shrink: 0;
+            align-self: center;
+        }
+
+        #editor-canvas {
+            width: 500px;
+            height: 500px;
+            image-rendering: pixelated;
+            display: block;
+        }
+
+        #editor-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .ed-btn {
+            padding: 5px 12px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.04);
+            color: rgba(255, 255, 255, 0.6);
+            font-family: inherit;
+            font-size: 10px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .ed-btn:hover {
+            background: rgba(255, 255, 255, 0.09);
+            color: #fff;
+        }
+
+        .ed-btn.active {
+            background: rgba(0, 170, 255, 0.15);
+            border-color: rgba(0, 170, 255, 0.45);
+            color: #40d0ff;
+        }
+
+        #editor-cell-count {
+            margin-left: auto;
+            font-size: 10px;
+            color: rgba(255, 255, 255, 0.3);
+        }
+
+        #editor-footer {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+        }
+
+        #editor-accept {
+            padding: 7px 20px;
+            border-radius: 7px;
+            border: 1px solid rgba(0, 255, 136, 0.4);
+            background: rgba(0, 255, 136, 0.12);
+            color: #00ff88;
+            font-family: inherit;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        #editor-accept:hover {
+            background: rgba(0, 255, 136, 0.22);
+            border-color: rgba(0, 255, 136, 0.65);
+            box-shadow: 0 0 12px rgba(0, 255, 136, 0.15);
+        }
+
+        #editor-cancel {
+            padding: 7px 16px;
+            border-radius: 7px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: transparent;
+            color: rgba(255, 255, 255, 0.45);
+            font-family: inherit;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        #editor-cancel:hover {
+            border-color: rgba(255, 255, 255, 0.25);
+            color: rgba(255, 255, 255, 0.8);
+        }
+
+        #editor-zoom-info {
+            font-size: 9px;
+            color: rgba(255, 255, 255, 0.2);
+            text-align: center;
+        }
+
         /* Mobile: anchor to bottom-right, default collapsed */
         @media (max-width: 600px) {
             #shape-panel {
@@ -370,6 +606,7 @@
         <div class="panel-body" id="shape-list-wrap" style="display:contents">
             <div id="shape-list"><!-- populated by JS --></div>
             <div id="shape-panel-footer">
+                <button id="open-editor-btn">✏ Create Custom Piece</button>
                 <button id="clear-btn">✕ Deselect shape [Esc]</button>
                 Click a shape then click the grid to place it.
             </div>
@@ -377,6 +614,50 @@
     </div>
 
     <canvas id="grid" style="cursor: crosshair;"></canvas>
+
+    <!-- Piece Editor Modal -->
+    <div id="piece-editor-overlay">
+        <div id="piece-editor">
+            <div id="editor-header">
+                <h3>✏ Piece Editor</h3>
+                <button id="editor-close" title="Close editor">✕</button>
+            </div>
+
+            <div id="editor-meta">
+                <div class="editor-field">
+                    <label for="editor-key">Key (unique id)</label>
+                    <input type="text" id="editor-key" placeholder="my-glider" />
+                </div>
+                <div class="editor-field">
+                    <label for="editor-label">Display name</label>
+                    <input type="text" id="editor-label" placeholder="My Glider" />
+                </div>
+                <div class="editor-field">
+                    <label for="editor-category">Category</label>
+                    <input type="text" id="editor-category" placeholder="Custom" />
+                </div>
+            </div>
+
+            <div id="editor-toolbar">
+                <button class="ed-btn active" id="ed-draw-btn" title="Draw mode">✦ Draw</button>
+                <button class="ed-btn" id="ed-erase-btn" title="Erase mode">◻ Erase</button>
+                <button class="ed-btn" id="ed-clear-btn" title="Clear all cells">⟳ Clear All</button>
+                <button class="ed-btn" id="ed-center-btn" title="Re-center view">⊕ Re-center</button>
+                <span id="editor-cell-count">0 cells</span>
+            </div>
+
+            <div id="editor-canvas-wrap">
+                <canvas id="editor-canvas" width="500" height="500"></canvas>
+            </div>
+            <div id="editor-zoom-info">Scroll to zoom · Drag to pan · Click/drag to paint</div>
+
+            <div id="editor-footer">
+                <button id="editor-cancel">Cancel</button>
+                <button id="editor-accept">✓ Add to Catalog</button>
+            </div>
+        </div>
+    </div>
+
     <script src="app.js"></script>
 </body>
 

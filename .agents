@@ -28,8 +28,12 @@ apply local predictive ticks for responsiveness.
   per cell spawned. Tracked client-side for instant UI feedback and enforced
   server-side for correctness.
 - **WebSocket message types**:
-  - Client → Server: `SUBSCRIBE`, `UNSUBSCRIBE`, `SPAWN`, `PLACE_SHAPE`
-  - Server → Client: `CHUNK_STATE`, `SPAWN_ACK`, `PLACE_SHAPE_ACK`, `ERROR`
+  - Client → Server: `SUBSCRIBE`, `UNSUBSCRIBE`, `SPAWN`, `PLACE_SHAPE`, `PLACE_CUSTOM`
+  - Server → Client: `CHUNK_STATE`, `SPAWN_ACK`, `PLACE_SHAPE_ACK`, `PLACE_CUSTOM_ACK`, `ERROR`
+  - `PLACE_SHAPE` sends a named catalog key; the server resolves cell offsets.
+  - `PLACE_CUSTOM` sends inline `{x,y}` cell offsets for client-created pieces (piece editor).
+    Validated server-side: offsets 0–99, max 10 000 unique cells; pieces >50 cells incur
+    an extra 25-token cooldown penalty.
 
 ## Frontend Conventions
 - `localCells` is a `Map<"x,y", hslColorString>` — **not** a plain Set.

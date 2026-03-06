@@ -58,6 +58,9 @@ let isPanning = false;
 // Shape-placement state
 let selectedShape = null;
 let catalog = {};
+// Tracks catalog keys that were created locally (via the piece editor)
+// and are not known to the server. These are sent as PLACE_CUSTOM.
+const customPieces = new Set();
 let ghostCells = [];
 let mouseWorldX = 0;
 let mouseWorldY = 0;
@@ -151,6 +154,7 @@ ws.onmessage = ({ data }) => {
             break;
         case 'SPAWN_ACK':
         case 'PLACE_SHAPE_ACK':
+        case 'PLACE_CUSTOM_ACK':
             // Server confirmed the placement — discard the pending entry.
             // localCells already has the cells; server reconciliation will
             // correct any drift within one tick.
@@ -483,6 +487,7 @@ function localTick() {
 
 setInterval(localTick, LOCAL_TICK_MS);
 
+
 // ─── Place action (shared by mouse click & touch tap) ────────────────────────
 function placeAt(screenX, screenY) {
     const { wx, wy } = screenToWorld(screenX, screenY);
@@ -498,8 +503,26 @@ function placeAt(screenX, screenY) {
         }
         rlConsume(optimistic.length); // charge tokens before sending
         pendingCommands.push(optimistic);
-        if (ws.readyState === WebSocket.OPEN)
-            ws.send(JSON.stringify({ type: 'PLACE_SHAPE', payload: { x: wx, y: wy, shape: selectedShape } }));
+
+        if (ws.readyState === WebSocket.OPEN) {
+            if (customPieces.has(selectedShape)) {
+                // Client-only piece: send inline cell offsets as PLACE_CUSTOM.
+                ws.send(JSON.stringify({
+                    type: 'PLACE_CUSTOM',
+                    payload: {
+                        x: wx,
+                        y: wy,
+                        cells: catalog[selectedShape].cells,
+                    },
+                }));
+            } else {
+                // Server-known shape: send only the key.
+                ws.send(JSON.stringify({
+                    type: 'PLACE_SHAPE',
+                    payload: { x: wx, y: wy, shape: selectedShape },
+                }));
+            }
+        }
     } else {
         const key = `${wx},${wy}`;
         localCells.set(key, randomPastelColor());
@@ -733,5 +756,295 @@ function draw() {
     requestAnimationFrame(draw);
 }
 draw();
+
+// ─── Piece Editor ────────────────────────────────────────────────────────────
+(function () {
+    // DOM refs
+    const overlay = document.getElementById('piece-editor-overlay');
+    const edCanvas = document.getElementById('editor-canvas');
+    const edCtx = edCanvas.getContext('2d');
+    const keyInput = document.getElementById('editor-key');
+    const labelInput = document.getElementById('editor-label');
+    const catInput = document.getElementById('editor-category');
+    const drawBtn = document.getElementById('ed-draw-btn');
+    const eraseBtn = document.getElementById('ed-erase-btn');
+    const clearAllBtn = document.getElementById('ed-clear-btn');
+    const centerBtn = document.getElementById('ed-center-btn');
+    const cellCountEl = document.getElementById('editor-cell-count');
+    const acceptBtn = document.getElementById('editor-accept');
+    const cancelBtn = document.getElementById('editor-cancel');
+    const closeBtn = document.getElementById('editor-close');
+    const openBtn = document.getElementById('open-editor-btn');
+
+    // Editor state
+    const GRID_W = 100;
+    const GRID_H = 100;
+    // edCells[y][x] = true | undefined
+    let edCells = [];
+
+    // View state: virtual canvas coordinate of the editor canvas top-left
+    let edCamX = 0;   // pixels of the 500px display canvas
+    let edCamY = 0;
+    let edZoom = 5;   // pixels per cell at 1× (display pixels)
+    const ED_MIN_ZOOM = 2;
+    const ED_MAX_ZOOM = 30;
+
+    let edMode = 'draw'; // 'draw' | 'erase'
+    let edPainting = false;
+    let edPanAnchorX = 0;
+    let edPanAnchorY = 0;
+    let edIsPanning = false;
+    let edPaintValue = true; // true = place, false = erase
+
+    // ── helpers ──
+    function cellPxEd() { return edZoom; }
+
+    function resetEdCells() {
+        edCells = [];
+        for (let y = 0; y < GRID_H; y++) edCells[y] = [];
+    }
+
+    function edCenterView() {
+        // Put the 100×100 grid in the center of the 500px canvas
+        const cp = cellPxEd();
+        edCamX = (500 - GRID_W * cp) / 2;
+        edCamY = (500 - GRID_H * cp) / 2;
+    }
+
+    function edCountCells() {
+        let n = 0;
+        for (let y = 0; y < GRID_H; y++)
+            for (let x = 0; x < GRID_W; x++)
+                if (edCells[y] && edCells[y][x]) n++;
+        return n;
+    }
+
+    function edUpdateCount() {
+        cellCountEl.textContent = `${edCountCells()} cells`;
+    }
+
+    // ── render ──
+    function edDraw() {
+        const cp = cellPxEd();
+        const W = edCanvas.width;
+        const H = edCanvas.height;
+
+        // Background
+        edCtx.fillStyle = '#05050f';
+        edCtx.fillRect(0, 0, W, H);
+
+        // Grid boundary glow
+        const gx0 = edCamX;
+        const gy0 = edCamY;
+        const gx1 = edCamX + GRID_W * cp;
+        const gy1 = edCamY + GRID_H * cp;
+
+        edCtx.strokeStyle = 'rgba(0, 170, 255, 0.25)';
+        edCtx.lineWidth = 1;
+        edCtx.strokeRect(gx0, gy0, GRID_W * cp, GRID_H * cp);
+
+        // Cell lines (only when large enough)
+        if (cp >= 4) {
+            edCtx.strokeStyle = 'rgba(255,255,255,0.04)';
+            edCtx.lineWidth = 0.5;
+            for (let x = 0; x <= GRID_W; x++) {
+                const lx = gx0 + x * cp;
+                edCtx.beginPath(); edCtx.moveTo(lx, gy0); edCtx.lineTo(lx, gy1); edCtx.stroke();
+            }
+            for (let y = 0; y <= GRID_H; y++) {
+                const ly = gy0 + y * cp;
+                edCtx.beginPath(); edCtx.moveTo(gx0, ly); edCtx.lineTo(gx1, ly); edCtx.stroke();
+            }
+        }
+
+        // Cells
+        const cellDraw = Math.max(1, cp - (cp >= 3 ? 1 : 0));
+        edCtx.fillStyle = '#00ff88';
+        for (let y = 0; y < GRID_H; y++) {
+            if (!edCells[y]) continue;
+            for (let x = 0; x < GRID_W; x++) {
+                if (!edCells[y][x]) continue;
+                const sx = gx0 + x * cp;
+                const sy = gy0 + y * cp;
+                if (sx + cp < 0 || sx > W || sy + cp < 0 || sy > H) continue;
+                edCtx.fillRect(sx, sy, cellDraw, cellDraw);
+            }
+        }
+    }
+
+    // ── coord helpers ──
+    function screenToCell(sx, sy) {
+        const cp = cellPxEd();
+        return {
+            cx: Math.floor((sx - edCamX) / cp),
+            cy: Math.floor((sy - edCamY) / cp),
+        };
+    }
+
+    function getCanvasPos(e) {
+        const rect = edCanvas.getBoundingClientRect();
+        // edCanvas display size = 500×500, but actual canvas resolution may differ
+        const scaleX = edCanvas.width / rect.width;
+        const scaleY = edCanvas.height / rect.height;
+        return {
+            x: (e.clientX - rect.left) * scaleX,
+            y: (e.clientY - rect.top) * scaleY,
+        };
+    }
+
+    function edPaintCell(sx, sy) {
+        const { cx, cy } = screenToCell(sx, sy);
+        if (cx < 0 || cx >= GRID_W || cy < 0 || cy >= GRID_H) return;
+        if (!edCells[cy]) edCells[cy] = [];
+        const newVal = (edMode === 'erase') ? false : edPaintValue;
+        if (!!edCells[cy][cx] === newVal) return; // no change
+        edCells[cy][cx] = newVal || undefined;
+        edUpdateCount();
+    }
+
+    // ── mouse events ──
+    edCanvas.addEventListener('mousedown', e => {
+        e.preventDefault();
+        const { x, y } = getCanvasPos(e);
+        if (e.button === 1 || e.button === 2 || e.altKey) {
+            // Middle / right / alt = pan
+            edIsPanning = true;
+            edPanAnchorX = x - edCamX;
+            edPanAnchorY = y - edCamY;
+        } else {
+            edIsPanning = false;
+            edPainting = true;
+            // Determine if we start on a live cell (for toggle erasing)
+            const { cx, cy } = screenToCell(x, y);
+            const isLive = cx >= 0 && cx < GRID_W && cy >= 0 && cy < GRID_H
+                && edCells[cy] && edCells[cy][cx];
+            edPaintValue = (edMode === 'erase') ? false : !isLive;
+            edPaintCell(x, y);
+        }
+        edDraw();
+    });
+
+    edCanvas.addEventListener('mousemove', e => {
+        e.preventDefault();
+        const { x, y } = getCanvasPos(e);
+        if (edIsPanning) {
+            edCamX = x - edPanAnchorX;
+            edCamY = y - edPanAnchorY;
+            edDraw();
+        } else if (edPainting) {
+            edPaintCell(x, y);
+            edDraw();
+        }
+    });
+
+    window.addEventListener('mouseup', () => {
+        edPainting = false;
+        edIsPanning = false;
+    });
+
+    edCanvas.addEventListener('contextmenu', e => e.preventDefault());
+
+    edCanvas.addEventListener('wheel', e => {
+        e.preventDefault();
+        const { x, y } = getCanvasPos(e);
+        const oldZoom = edZoom;
+        const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+        edZoom = Math.max(ED_MIN_ZOOM, Math.min(ED_MAX_ZOOM, edZoom * factor));
+        // Zoom around the cursor
+        edCamX = x - (x - edCamX) / oldZoom * edZoom;
+        edCamY = y - (y - edCamY) / oldZoom * edZoom;
+        edDraw();
+    }, { passive: false });
+
+    // ── toolbar buttons ──
+    function setEdMode(mode) {
+        edMode = mode;
+        drawBtn.classList.toggle('active', mode === 'draw');
+        eraseBtn.classList.toggle('active', mode === 'erase');
+        edCanvas.style.cursor = mode === 'erase' ? 'cell' : 'crosshair';
+    }
+
+    drawBtn.addEventListener('click', () => setEdMode('draw'));
+    eraseBtn.addEventListener('click', () => setEdMode('erase'));
+
+    clearAllBtn.addEventListener('click', () => {
+        resetEdCells();
+        edUpdateCount();
+        edDraw();
+    });
+
+    centerBtn.addEventListener('click', () => {
+        edCenterView();
+        edDraw();
+    });
+
+    // ── open / close ──
+    function openEditor() {
+        resetEdCells();
+        edUpdateCount();
+        setEdMode('draw');
+        keyInput.value = '';
+        labelInput.value = '';
+        catInput.value = 'Custom';
+        overlay.classList.add('open');
+        edCenterView();
+        edDraw();
+    }
+
+    function closeEditor() {
+        overlay.classList.remove('open');
+    }
+
+    openBtn.addEventListener('click', openEditor);
+    closeBtn.addEventListener('click', closeEditor);
+    cancelBtn.addEventListener('click', closeEditor);
+
+    // Close on ESC (but don't propagate to main app)
+    window.addEventListener('keydown', e => {
+        if (!overlay.classList.contains('open')) return;
+        if (e.key === 'Escape') {
+            e.stopImmediatePropagation();
+            closeEditor();
+        }
+    }, { capture: true });
+
+    // Click backdrop to close
+    overlay.addEventListener('click', e => {
+        if (e.target === overlay) closeEditor();
+    });
+
+    // ── accept ──
+    acceptBtn.addEventListener('click', () => {
+        const key = keyInput.value.trim().toLowerCase().replace(/\s+/g, '-');
+        const label = labelInput.value.trim();
+        const category = catInput.value.trim() || 'Custom';
+
+        if (!key) { showToast('⚠ Key is required', '#ffaa00'); return; }
+        if (!label) { showToast('⚠ Display name is required', '#ffaa00'); return; }
+
+        // Build cells array: {x, y} offsets relative to bounding-box top-left
+        const rawCells = [];
+        for (let y = 0; y < GRID_H; y++)
+            for (let x = 0; x < GRID_W; x++)
+                if (edCells[y] && edCells[y][x]) rawCells.push({ x, y });
+
+        if (rawCells.length === 0) { showToast('⚠ Draw at least one cell', '#ffaa00'); return; }
+
+        // Normalize: subtract bounding-box min so offsets start at (0,0)
+        const minX = Math.min(...rawCells.map(c => c.x));
+        const minY = Math.min(...rawCells.map(c => c.y));
+        const cells = rawCells.map(c => ({ x: c.x - minX, y: c.y - minY }));
+
+        // Add to the client catalog, marking it as a custom (client-only) piece.
+        catalog[key] = { label, category, cells };
+        customPieces.add(key);
+
+        // Rebuild the shape panel to show the new entry
+        buildPanel();
+
+        showToast(`✓ "${label}" added to catalog`, '#00ff88');
+        closeEditor();
+    });
+})();
 
 fetchCatalog();

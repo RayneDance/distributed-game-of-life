@@ -153,3 +153,56 @@ func HandleCatalog() http.HandlerFunc {
 		w.Write(data) //nolint:errcheck
 	}
 }
+
+// ── Custom piece validation ───────────────────────────────────────────────────
+
+const (
+	// MaxCustomDim is the maximum allowed value for any single cell offset (x or y).
+	// Pieces are bounded to a 100×100 grid (offsets 0–99 inclusive).
+	MaxCustomDim = 99
+
+	// MaxCustomCells is the hard cap on the number of cells in a custom piece
+	// (100 × 100 = 10 000).
+	MaxCustomCells = 10_000
+
+	// LargeCustomThreshold is the cell count above which an additional rate-limit
+	// cooldown is applied when a custom piece is placed.
+	LargeCustomThreshold = 50
+)
+
+// ValidateCustomCells checks the provided cell offsets against the rules for
+// custom pieces and returns the de-duplicated, validated slice, or a non-empty
+// error string describing the first violation found.
+//
+// Rules enforced:
+//  1. At least one cell must be present.
+//  2. Every x and y offset must be in [0, MaxCustomDim].
+//  3. After de-duplication, the cell count must not exceed MaxCustomCells.
+func ValidateCustomCells(cells []CellOffset) ([]CellOffset, string) {
+	if len(cells) == 0 {
+		return nil, "EMPTY_PIECE"
+	}
+
+	// De-duplicate using a set keyed on packed int64.
+	type key struct{ x, y int64 }
+	seen := make(map[key]struct{}, len(cells))
+	out := make([]CellOffset, 0, len(cells))
+
+	for _, c := range cells {
+		if c.X < 0 || c.X > MaxCustomDim || c.Y < 0 || c.Y > MaxCustomDim {
+			return nil, "OUT_OF_BOUNDS"
+		}
+		k := key{c.X, c.Y}
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, c)
+	}
+
+	if len(out) > MaxCustomCells {
+		return nil, "TOO_MANY_CELLS"
+	}
+
+	return out, ""
+}

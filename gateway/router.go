@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/RayneDance/distributed-game-of-life/ratelimit"
@@ -72,15 +73,60 @@ func (r *Router) Route(ctx context.Context, playerID string, msg IncomingMessage
 			return
 		}
 		// Charge one token per cell; bail on first rate-limit refusal.
-		for range cells {
-			if !r.checkRateLimit(ctx, playerID, client) {
-				return
-			}
+		if !r.chargeN(ctx, playerID, client, len(cells)) {
+			return
 		}
 		for _, c := range cells {
 			r.spawnWorldCell(ctx, cmd.X+c.X, cmd.Y+c.Y)
 		}
 		client.WriteJSON(OutgoingMessage{Type: "PLACE_SHAPE_ACK", Payload: cmd})
+
+	// PLACE_CUSTOM — arbitrary client-defined pattern.
+	// Cells are (dx, dy) offsets from the root (X, Y) — the same format used
+	// by the piece editor on the client.  The server validates:
+	//   • Every offset is within the 100×100 custom-piece grid (0–99 inclusive).
+	//   • The de-duplicated cell count does not exceed 10 000.
+	//   • The player has enough rate-limit tokens to cover each cell.
+	// Pieces larger than LargeCustomThreshold additionally incur a penalty of
+	// LargeCustomPenalty extra tokens so that massive pieces impose a meaningful
+	// cooldown before the next placement.
+	case "PLACE_CUSTOM":
+		const LargeCustomPenalty = 25 // extra tokens drained for pieces ≥ LargeCustomThreshold
+
+		var cmd PlaceCustomCommand
+		if !parsePayload(msg.Payload, &cmd, client) {
+			return
+		}
+
+		// Validate and de-duplicate cells.
+		validCells, errCode := ValidateCustomCells(cmd.Cells)
+		if errCode != "" {
+			sendError(client, errCode, fmt.Sprintf(
+				"Custom piece validation failed: %s (max %d×%d, max %d cells)",
+				errCode, MaxCustomDim+1, MaxCustomDim+1, MaxCustomCells,
+			))
+			return
+		}
+
+		// Charge one token per unique cell.
+		if !r.chargeN(ctx, playerID, client, len(validCells)) {
+			return
+		}
+
+		// Extra cooldown for large pieces (> LargeCustomThreshold cells).
+		if len(validCells) > LargeCustomThreshold {
+			if !r.chargeN(ctx, playerID, client, LargeCustomPenalty) {
+				// Penalty couldn't be charged — still proceed with placement
+				// (cell tokens already consumed), just log the edge case.
+				// The player is already at or near zero anyway.
+			}
+		}
+
+		// Spawn all validated cells.
+		for _, c := range validCells {
+			r.spawnWorldCell(ctx, cmd.X+c.X, cmd.Y+c.Y)
+		}
+		client.WriteJSON(OutgoingMessage{Type: "PLACE_CUSTOM_ACK", Payload: cmd})
 
 	case "SUBSCRIBE":
 		var cmd SubscribeCommand
@@ -130,6 +176,17 @@ func (r *Router) checkRateLimit(ctx context.Context, playerID string, client *Cl
 	if !allowed {
 		sendError(client, "RATE_LIMITED", "Slow down!")
 		return false
+	}
+	return true
+}
+
+// chargeN consumes n tokens from the rate limiter for playerID, sending an
+// error and returning false on the first refusal.  n == 0 is a no-op.
+func (r *Router) chargeN(ctx context.Context, playerID string, client *Client, n int) bool {
+	for i := 0; i < n; i++ {
+		if !r.checkRateLimit(ctx, playerID, client) {
+			return false
+		}
 	}
 	return true
 }
