@@ -24,6 +24,11 @@ type RegistryConfig struct {
 	// Implemented as a closure over storage.RedisEngine in main.go.
 	Persist func(chunk *Chunk) error
 
+	// Load hydrates a chunk from durable storage.
+	// Called inside GetOrCreate before the actor is started, so a chunk
+	// that was previously hibernated resumes from its persisted state.
+	Load func(id ChunkID) (*Chunk, error)
+
 	// HasSubscribers reports whether any client is viewing the chunk.
 	// Used to block hibernation of visible-but-empty chunks.
 	HasSubscribers func(id ChunkID) bool
@@ -63,6 +68,8 @@ type haloReq struct {
 }
 
 // GetOrCreate returns an existing actor or lazily instantiates a new one.
+// If a Load callback is configured and the chunk has persisted state, the actor
+// is hydrated from storage before its goroutine starts.
 func (r *Registry) GetOrCreate(id ChunkID) ChunkActor {
 	r.mu.RLock()
 	actor, exists := r.chunks[id]
@@ -78,8 +85,17 @@ func (r *Registry) GetOrCreate(id ChunkID) ChunkActor {
 		return actor
 	}
 
+	chunk := NewChunk(id.X, id.Y)
+	if r.cfg.Load != nil {
+		if loaded, err := r.cfg.Load(id); err != nil {
+			log.Printf("chunk (%d,%d): load from storage failed, starting blank: %v", id.X, id.Y, err)
+		} else if loaded != nil {
+			chunk = loaded
+		}
+	}
+
 	actor = &chunkActorImpl{
-		chunk:     NewChunk(id.X, id.Y),
+		chunk:     chunk,
 		spawnChan: make(chan spawnReq, 100),
 		haloChan:  make(chan haloReq, 8),
 		tickChan:  make(chan struct{}, 1),
@@ -93,6 +109,19 @@ func (r *Registry) GetOrCreate(id ChunkID) ChunkActor {
 
 	go actor.run()
 	return actor
+}
+
+// SnapshotChunk returns the current cell snapshot for a chunk if it has an
+// active actor, or nil if the chunk is hibernated / unknown.
+// Used by the gateway to immediately push state to newly-subscribed clients.
+func (r *Registry) SnapshotChunk(id ChunkID) []uint16 {
+	r.mu.RLock()
+	actor, exists := r.chunks[id]
+	r.mu.RUnlock()
+	if !exists {
+		return nil
+	}
+	return actor.chunk.Snapshot()
 }
 
 // evict removes the actor from the registry (called by the actor itself on hibernation).

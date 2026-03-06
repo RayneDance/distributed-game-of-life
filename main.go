@@ -92,6 +92,9 @@ func main() {
 
 	registry := simulation.NewRegistry(simulation.RegistryConfig{
 		OnTick: pubsub.Broadcast,
+		Load: func(id simulation.ChunkID) (*simulation.Chunk, error) {
+			return store.LoadChunk(context.Background(), id)
+		},
 		Persist: func(chunk *simulation.Chunk) error {
 			start := time.Now()
 			err := store.SaveChunk(context.Background(), chunk)
