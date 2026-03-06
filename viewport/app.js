@@ -65,6 +65,28 @@ let activeCategory = 'All';
 // Chunk subscriptions
 let subscribedChunks = new Set(); // "cx,cy" strings
 
+// Pending command queue — each entry holds the optimistically-added cell keys
+// for one outgoing WS message, in send order.
+// ACK  → shift() and discard (cells already confirmed / will reconcile).
+// ERROR → shift() and delete those keys from localCells (rollback).
+const pendingCommands = [];
+
+// ─── Toast Notification ───────────────────────────────────────────────────────
+function showToast(msg, color = '#ff4455') {
+    const t = document.createElement('div');
+    t.textContent = msg;
+    t.style.cssText = [
+        'position:fixed', 'bottom:60px', 'left:50%', 'transform:translateX(-50%)',
+        `background:${color}22`, `border:1px solid ${color}66`, `color:${color}`,
+        'padding:6px 16px', 'border-radius:6px', 'font-size:11px',
+        'font-family:monospace', 'pointer-events:none',
+        'transition:opacity 0.4s ease', 'opacity:1', 'z-index:999'
+    ].join(';');
+    document.body.appendChild(t);
+    setTimeout(() => { t.style.opacity = '0'; }, 1800);
+    setTimeout(() => t.remove(), 2300);
+}
+
 // ─── WebSocket ───────────────────────────────────────────────────────────────
 const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
 const ws = new WebSocket(`${wsProto}//${location.host}/ws`);
@@ -81,10 +103,31 @@ ws.onclose = () => {
 ws.onmessage = ({ data }) => {
     const msg = JSON.parse(data);
     switch (msg.type) {
-        case 'CHUNK_STATE': reconcileChunk(msg.payload); break;
-        case 'SPAWN_ACK': break;
-        case 'PLACE_SHAPE_ACK': break;
-        case 'ERROR': console.warn('Server:', msg.payload.code, msg.payload.message); break;
+        case 'CHUNK_STATE':
+            reconcileChunk(msg.payload);
+            break;
+        case 'SPAWN_ACK':
+        case 'PLACE_SHAPE_ACK':
+            // Server confirmed the placement — discard the pending entry.
+            // localCells already has the cells; server reconciliation will
+            // correct any drift within one tick.
+            pendingCommands.shift();
+            break;
+        case 'ERROR': {
+            // Roll back the optimistic cells for this command so phantom
+            // cells don't linger (especially in chunks with no active actor
+            // that would never receive a reconciling CHUNK_STATE).
+            const pending = pendingCommands.shift();
+            if (pending) {
+                for (const key of pending) localCells.delete(key);
+            }
+            if (msg.payload.code === 'RATE_LIMITED') {
+                showToast('⚡ Rate limited — slow down!');
+            } else {
+                console.warn('Server error:', msg.payload.code, msg.payload.message);
+            }
+            break;
+        }
     }
 };
 
@@ -319,15 +362,24 @@ setInterval(localTick, LOCAL_TICK_MS);
 // ─── Place action (shared by mouse click & touch tap) ────────────────────────
 function placeAt(screenX, screenY) {
     const { wx, wy } = screenToWorld(screenX, screenY);
-    if (selectedShape) {
-        if (catalog[selectedShape]) {
-            for (const c of catalog[selectedShape].cells)
-                localCells.add(`${wx + c.x},${wy + c.y}`);
+    // Build the set of keys being added optimistically so we can roll back
+    // if the server rejects the command (e.g. rate limited).
+    const optimistic = [];
+
+    if (selectedShape && catalog[selectedShape]) {
+        for (const c of catalog[selectedShape].cells) {
+            const key = `${wx + c.x},${wy + c.y}`;
+            localCells.add(key);
+            optimistic.push(key);
         }
+        pendingCommands.push(optimistic);
         if (ws.readyState === WebSocket.OPEN)
             ws.send(JSON.stringify({ type: 'PLACE_SHAPE', payload: { x: wx, y: wy, shape: selectedShape } }));
     } else {
-        localCells.add(`${wx},${wy}`);
+        const key = `${wx},${wy}`;
+        localCells.add(key);
+        optimistic.push(key);
+        pendingCommands.push(optimistic);
         if (ws.readyState === WebSocket.OPEN)
             ws.send(JSON.stringify({ type: 'SPAWN', payload: { x: wx, y: wy } }));
     }
