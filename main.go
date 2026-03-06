@@ -108,6 +108,22 @@ func main() {
 	limiter := ratelimit.NewLimiter(redisClient)
 	router := gateway.NewRouter(limiter, registry, pubsub)
 
+	// Global tick loop — drives the simulation forward at a fixed rate.
+	// Every actor is ticked; halo exchange between neighbours happens first.
+	const tickInterval = 250 * time.Millisecond
+	go func() {
+		ticker := time.NewTicker(tickInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				registry.TickAll(ctx)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	http.Handle("/ws", gateway.HandleWebSocket(router, pubsub))
 	http.Handle("/metrics", promhttp.Handler())
 	http.Handle("/catalog", gateway.HandleCatalog())

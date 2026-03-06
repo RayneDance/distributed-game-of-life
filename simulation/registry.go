@@ -124,6 +124,58 @@ func (r *Registry) SnapshotChunk(id ChunkID) []uint16 {
 	return actor.chunk.Snapshot()
 }
 
+// TickAll advances every active chunk by one generation.
+// It must be called by an external timer (e.g. time.Ticker in main.go).
+//
+// The sequence is:
+//  1. Snapshot every active chunk's cells while holding the read lock.
+//  2. For each chunk, send its edge cells as halo data to each of its 8 neighbours
+//     (only if that neighbour already has an active actor; we don't wake hibernated
+//     chunks for halos they don't need).
+//  3. Send a tick signal to every actor goroutine.
+func (r *Registry) TickAll(ctx context.Context) {
+	r.mu.RLock()
+	// Snapshot all actors so we can release the lock before doing channel sends.
+	type entry struct {
+		id    ChunkID
+		actor *chunkActorImpl
+		cells []uint16
+	}
+	entries := make([]entry, 0, len(r.chunks))
+	for id, a := range r.chunks {
+		entries = append(entries, entry{id, a, a.chunk.Snapshot()})
+	}
+	r.mu.RUnlock()
+
+	// Neighbour offsets for the 8 surrounding chunks.
+	neighbourOffsets := [8][2]int64{
+		{-1, -1}, {0, -1}, {1, -1},
+		{-1, 0}, {1, 0},
+		{-1, 1}, {0, 1}, {1, 1},
+	}
+
+	// Send halos to neighbours that have active actors.
+	for _, e := range entries {
+		if len(e.cells) == 0 {
+			continue // No live cells → nothing useful to share as a halo.
+		}
+		for _, off := range neighbourOffsets {
+			nid := ChunkID{X: e.id.X + off[0], Y: e.id.Y + off[1]}
+			r.mu.RLock()
+			neighbour, exists := r.chunks[nid]
+			r.mu.RUnlock()
+			if exists {
+				neighbour.ReceiveHalo(ctx, e.id, e.cells) //nolint:errcheck
+			}
+		}
+	}
+
+	// Tick every actor.
+	for _, e := range entries {
+		e.actor.Tick(ctx) //nolint:errcheck
+	}
+}
+
 // evict removes the actor from the registry (called by the actor itself on hibernation).
 func (r *Registry) evict(id ChunkID) {
 	r.mu.Lock()
