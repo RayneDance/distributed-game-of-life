@@ -60,7 +60,11 @@ func main() {
 	http.Handle("/metrics", promhttp.Handler())
 	http.Handle("/", http.FileServer(http.Dir("./viewport")))
 
-	addr := ":8080"
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	addr := ":" + port
 	log.Printf("Server listening on %s  (Redis: %s)", addr, redisAddr)
 	log.Printf("Prometheus metrics at http://localhost%s/metrics", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {
