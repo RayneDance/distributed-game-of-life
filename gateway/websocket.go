@@ -10,8 +10,8 @@ import (
 )
 
 // Client wraps a WebSocket connection with a write mutex.
-// gorilla/websocket explicitly prohibits concurrent writes, so all outgoing
-// messages must be serialised through WriteJSON.
+// gorilla/websocket prohibits concurrent writes; all outgoing messages
+// must be serialised through WriteJSON.
 type Client struct {
 	conn *websocket.Conn
 	mu   sync.Mutex
@@ -26,12 +26,13 @@ func (c *Client) WriteJSON(v interface{}) error {
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true // Security Consideration: In production, enforce strict CORS.
+		return true // Security Consideration: enforce strict CORS in production.
 	},
 }
 
-// HandleWebSocket upgrades the HTTP connection to a WebSocket and starts the read loop.
-func HandleWebSocket(router *Router) http.HandlerFunc {
+// HandleWebSocket upgrades the connection and runs the client read loop.
+// On disconnect, the client is removed from all PubSub subscriptions.
+func HandleWebSocket(router *Router, pubsub *PubSub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -41,14 +42,16 @@ func HandleWebSocket(router *Router) http.HandlerFunc {
 		defer conn.Close()
 
 		client := &Client{conn: conn}
+		// Guarantee cleanup of all subscriptions when the connection drops.
+		defer pubsub.UnsubscribeAll(client)
 
-		// Extract player ID from header or query param. Using remote addr for POC.
+		// Use remote address as player ID for the POC.
 		playerID := r.RemoteAddr
 
 		for {
 			_, message, err := conn.ReadMessage()
 			if err != nil {
-				log.Printf("Client disconnected: %v", err)
+				log.Printf("Client %s disconnected: %v", playerID, err)
 				break
 			}
 
@@ -65,10 +68,7 @@ func HandleWebSocket(router *Router) http.HandlerFunc {
 
 func sendError(client *Client, code, message string) {
 	client.WriteJSON(OutgoingMessage{
-		Type: "ERROR",
-		Payload: ErrorPayload{
-			Code:    code,
-			Message: message,
-		},
+		Type:    "ERROR",
+		Payload: ErrorPayload{Code: code, Message: message},
 	})
 }

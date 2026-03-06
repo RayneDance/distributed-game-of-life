@@ -6,13 +6,25 @@ type IncomingMessage struct {
 	Payload interface{} `json:"payload"`
 }
 
-// SpawnCommand represents a user requesting to flip a cell state.
+// SpawnCommand requests that a cell be toggled at absolute world coordinates.
 type SpawnCommand struct {
 	X int64 `json:"x"`
 	Y int64 `json:"y"`
 }
 
-// OutgoingMessage represents a message sent to the client.
+// SubscribeCommand requests a diff of viewport subscriptions.
+// Chunks lists the chunk coordinates to add or remove.
+type SubscribeCommand struct {
+	Chunks []ChunkRef `json:"chunks"`
+}
+
+// ChunkRef is a lightweight coordinate pair used in subscribe/unsubscribe payloads.
+type ChunkRef struct {
+	X int64 `json:"x"`
+	Y int64 `json:"y"`
+}
+
+// OutgoingMessage is the envelope for all server-to-client messages.
 type OutgoingMessage struct {
 	Type    string      `json:"type"`
 	Payload interface{} `json:"payload"`

@@ -5,16 +5,33 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Distributed Game of Life</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #121212; color: #fff; font-family: sans-serif; }
-        canvas { display: block; }
-        #ui { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 5px; pointer-events: none; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { overflow: hidden; background: #080810; color: #fff; font-family: 'Courier New', monospace; }
+        canvas { display: block; cursor: crosshair; }
+        #hud {
+            position: absolute;
+            top: 12px; left: 12px;
+            background: rgba(0, 0, 0, 0.65);
+            backdrop-filter: blur(6px);
+            padding: 10px 14px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.08);
+            pointer-events: none;
+            font-size: 12px;
+            line-height: 1.7;
+        }
+        #hud h3 { font-size: 13px; color: #00ff88; margin-bottom: 4px; letter-spacing: 1px; }
+        #status { font-weight: bold; }
+        #pos    { color: rgba(255,255,255,0.5); font-size: 11px; }
+        #help   { color: rgba(255,255,255,0.35); font-size: 10px; margin-top: 6px; }
     </style>
 </head>
 <body>
-    <div id="ui">
-        <h3>Viewport</h3>
-        <p>Click to spawn cells</p>
-        <p id="status">Connecting...</p>
+    <div id="hud">
+        <h3>GAME OF LIFE</h3>
+        <p>Status: <span id="status">Connecting…</span></p>
+        <p id="pos"></p>
+        <p id="help">Click to spawn · Drag to pan</p>
     </div>
     <canvas id="grid"></canvas>
     <script src="app.js"></script>
