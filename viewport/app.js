@@ -75,6 +75,10 @@ let subscribedChunks = new Set(); // "cx,cy" strings
 // ERROR → shift() and delete those keys from localCells (rollback).
 const pendingCommands = [];
 
+// Piece editor — exposed here so populateShapes() can call openEditor(key).
+// Assigned by the editor IIFE below.
+let openEditor = () => { };
+
 // ─── Rate Limit Budget Tracker ───────────────────────────────────────────────
 // Mirrors server config: player bucket = 50 max, 5 tokens/sec refill.
 // Tracked client-side so the bar is instant with no extra server round-trips.
@@ -1013,7 +1017,7 @@ draw();
 
     // ── open / close ──
     // editKey: if set, pre-populate the canvas with that piece for editing.
-    function openEditor(editKey = null) {
+    openEditor = function openEditor(editKey = null) {
         resetEdCells();
         edUpdateCount();
         setEdMode('draw');
@@ -1046,7 +1050,7 @@ draw();
         overlay.classList.remove('open');
     }
 
-    openBtn.addEventListener('click', openEditor);
+    openBtn.addEventListener('click', () => openEditor());
     closeBtn.addEventListener('click', closeEditor);
     cancelBtn.addEventListener('click', closeEditor);
 
