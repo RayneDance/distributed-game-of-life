@@ -6,7 +6,7 @@
 - [x] **Task 1.3: Game of Life Rules Engine.** Implement the core algorithm optimized for sparse cell iteration.
 
 ## Phase 2: State Storage & Synchronization
-- [ ] **Task 2.1: Redis Storage Engine.** Implement save/load for chunk state using Redis (hot state).
+- [x] **Task 2.1: Redis Storage Engine.** Implement save/load for chunk state using Redis (hot state).
 - [ ] **Task 2.2: Tick Manager.** Implement a deterministic lockstep clock to trigger chunk ticks and broadcast halo edge updates.
 
 ## Phase 3: Network & API (The Gateway)
