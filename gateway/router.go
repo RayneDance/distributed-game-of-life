@@ -57,12 +57,11 @@ func (r *Router) Route(ctx context.Context, playerID string, msg IncomingMessage
 		r.spawnWorldCell(ctx, cmd.X, cmd.Y)
 		client.WriteJSON(OutgoingMessage{Type: "SPAWN_ACK", Payload: cmd})
 
-	// PLACE_SHAPE — named pattern, rate-limited once per placement regardless of size.
-	// The server looks up the offsets; clients cannot supply arbitrary coordinates.
+	// PLACE_SHAPE — named pattern.
+	// Rate-limit cost = number of cells in the shape, so a 36-cell Gosper Gun
+	// costs 36 tokens rather than 1. This prevents flooding the board with large
+	// patterns as cheaply as spawning single cells.
 	case "PLACE_SHAPE":
-		if !r.checkRateLimit(ctx, playerID, client) {
-			return
-		}
 		var cmd PlaceShapeCommand
 		if !parsePayload(msg.Payload, &cmd, client) {
 			return
@@ -71,6 +70,12 @@ func (r *Router) Route(ctx context.Context, playerID string, msg IncomingMessage
 		if !ok {
 			sendError(client, "UNKNOWN_SHAPE", "Unknown shape: "+cmd.Shape)
 			return
+		}
+		// Charge one token per cell; bail on first rate-limit refusal.
+		for range cells {
+			if !r.checkRateLimit(ctx, playerID, client) {
+				return
+			}
 		}
 		for _, c := range cells {
 			r.spawnWorldCell(ctx, cmd.X+c.X, cmd.Y+c.Y)

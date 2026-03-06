@@ -70,6 +70,9 @@ type haloReq struct {
 // GetOrCreate returns an existing actor or lazily instantiates a new one.
 // If a Load callback is configured and the chunk has persisted state, the actor
 // is hydrated from storage before its goroutine starts.
+//
+// Load (Redis I/O) is called with NO locks held to avoid blocking the entire
+// registry during a network round-trip.
 func (r *Registry) GetOrCreate(id ChunkID) ChunkActor {
 	r.mu.RLock()
 	actor, exists := r.chunks[id]
@@ -78,13 +81,7 @@ func (r *Registry) GetOrCreate(id ChunkID) ChunkActor {
 		return actor
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	// Double-check after acquiring write lock.
-	if actor, exists = r.chunks[id]; exists {
-		return actor
-	}
-
+	// Load from storage without holding any lock.
 	chunk := NewChunk(id.X, id.Y)
 	if r.cfg.Load != nil {
 		if loaded, err := r.cfg.Load(id); err != nil {
@@ -94,10 +91,17 @@ func (r *Registry) GetOrCreate(id ChunkID) ChunkActor {
 		}
 	}
 
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// Another goroutine may have created the actor while we were loading.
+	if actor, exists = r.chunks[id]; exists {
+		return actor
+	}
+
 	actor = &chunkActorImpl{
 		chunk:     chunk,
 		spawnChan: make(chan spawnReq, 100),
-		haloChan:  make(chan haloReq, 8),
+		haloChan:  make(chan haloReq, 16), // 16: headroom for all 8 neighbours × 2 rounds
 		tickChan:  make(chan struct{}, 1),
 		registry:  r,
 	}

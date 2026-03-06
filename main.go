@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -21,6 +22,26 @@ import (
 	"github.com/RayneDance/distributed-game-of-life/simulation"
 	"github.com/RayneDance/distributed-game-of-life/storage"
 )
+
+// loopbackOnly wraps a handler so it only responds to requests from the local
+// machine (127.0.0.1, ::1). All other callers receive 403 Forbidden.
+// Used to protect /metrics from public internet access while still allowing
+// a Prometheus sidecar on the same host to scrape it.
+func loopbackOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // readSecret fetches the latest version of a named secret from Cloud Secret Manager.
 func readSecret(ctx context.Context, client *secretmanager.Client, project, name string) (string, error) {
@@ -125,7 +146,9 @@ func main() {
 	}()
 
 	http.Handle("/ws", gateway.HandleWebSocket(router, pubsub))
-	http.Handle("/metrics", promhttp.Handler())
+	// /metrics is restricted to loopback so it is scrapeable by a Prometheus
+	// sidecar but not exposed to the public internet.
+	http.Handle("/metrics", loopbackOnly(promhttp.Handler()))
 	http.Handle("/catalog", gateway.HandleCatalog())
 	http.Handle("/", http.FileServer(http.Dir("./viewport")))
 
