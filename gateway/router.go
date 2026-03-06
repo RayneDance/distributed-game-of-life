@@ -90,10 +90,12 @@ func (r *Router) Route(ctx context.Context, playerID string, msg IncomingMessage
 		for _, ref := range cmd.Chunks {
 			id := simulation.ChunkID{X: ref.X, Y: ref.Y}
 			r.pubsub.Subscribe(id, client)
-			// Immediately flush current state so the client doesn't wait for the
-			// next tick. PeekChunk reads from an existing actor OR falls back to
-			// storage without creating a new actor for empty chunks.
+			// PeekChunk reads state without creating an actor (no side effects for
+			// empty chunks). If cells exist we must also call GetOrCreate so the
+			// actor is registered with TickAll — otherwise the world is visible
+			// but permanently frozen after a server restart.
 			if cells := r.registry.PeekChunk(id); len(cells) > 0 {
+				r.registry.GetOrCreate(id) // start actor so simulation runs
 				client.WriteJSON(OutgoingMessage{
 					Type:    "CHUNK_STATE",
 					Payload: ChunkStatePayload{X: ref.X, Y: ref.Y, Cells: cells},
