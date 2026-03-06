@@ -17,6 +17,24 @@ const modeBadge = document.getElementById('mode-badge');
 const catTabsEl = document.getElementById('category-tabs');
 const shapeList = document.getElementById('shape-list');
 const clearBtn = document.getElementById('clear-btn');
+const shapePanel = document.getElementById('shape-panel');
+const panelToggle = document.getElementById('panel-toggle');
+
+// ─── Panel Collapse ───────────────────────────────────────────────────────────
+function setPanelCollapsed(collapsed) {
+    shapePanel.classList.toggle('collapsed', collapsed);
+    panelToggle.textContent = collapsed ? '▶' : '◀';
+    panelToggle.title = collapsed ? 'Expand shape panel' : 'Collapse shape panel';
+}
+
+panelToggle.addEventListener('click', () => {
+    setPanelCollapsed(!shapePanel.classList.contains('collapsed'));
+});
+
+// Default: collapsed on narrow screens (mobile)
+setPanelCollapsed(window.innerWidth <= 600);
+
+
 
 // ─── State ───────────────────────────────────────────────────────────────────
 let localCells = new Set(); // "x,y" strings

@@ -79,7 +79,7 @@
             top: 12px;
             bottom: 12px;
             width: 220px;
-            background: rgba(8, 8, 20, 0.85);
+            background: rgba(8, 8, 20, 0.88);
             backdrop-filter: blur(10px);
             border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 10px;
@@ -87,20 +87,79 @@
             flex-direction: column;
             overflow: hidden;
             font-size: 12px;
+            transition: width 0.22s ease;
         }
 
+        /* Collapsed: only the header strip is shown */
+        #shape-panel.collapsed {
+            bottom: auto;
+            /* don't stretch full height when collapsed */
+            width: 44px;
+        }
+
+        #shape-panel.collapsed .panel-body {
+            display: none;
+        }
+
+        #shape-panel.collapsed #shape-panel-header h4,
+        #shape-panel.collapsed #category-tabs {
+            display: none;
+        }
+
+        /* Header row: title + toggle button side by side */
         #shape-panel-header {
-            padding: 10px 12px 8px;
+            padding: 8px 10px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.07);
             flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-height: 44px;
         }
 
         #shape-panel-header h4 {
+            flex: 1;
             font-size: 11px;
             color: #00ff88;
             letter-spacing: 1px;
             text-transform: uppercase;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
+            /* Push tabs below the header row */
+            align-self: flex-start;
+            padding-top: 2px;
+        }
+
+        /* Wrap title + tabs in a column so toggle sits beside them */
+        #header-text {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            min-width: 0;
+        }
+
+        #panel-toggle {
+            flex-shrink: 0;
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.05);
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s ease;
+            font-family: inherit;
+            align-self: flex-start;
+        }
+
+        #panel-toggle:hover {
+            background: rgba(0, 255, 136, 0.15);
+            border-color: rgba(0, 255, 136, 0.4);
+            color: #00ff88;
         }
 
         /* Category tabs */
@@ -208,7 +267,7 @@
             margin-top: 1px;
         }
 
-        /* Escape hint at bottom */
+        /* Footer */
         #shape-panel-footer {
             padding: 8px 12px;
             border-top: 1px solid rgba(255, 255, 255, 0.06);
@@ -237,6 +296,19 @@
             border-color: rgba(255, 80, 80, 0.5);
             color: #ff6666;
         }
+
+        /* Mobile: anchor to bottom-right, default collapsed */
+        @media (max-width: 600px) {
+            #shape-panel {
+                top: auto;
+                bottom: 12px;
+                right: 12px;
+            }
+
+            #hud {
+                font-size: 11px;
+            }
+        }
     </style>
 </head>
 
@@ -246,19 +318,24 @@
         <p>Status: <span id="status">Connecting…</span></p>
         <p id="pos"></p>
         <p id="mode-badge">✦ CELL MODE</p>
-        <p id="help">Click to spawn · Drag to pan</p>
+        <p id="help">Click to spawn · Drag to pan · Scroll to zoom</p>
     </div>
 
     <!-- Shape Picker -->
     <div id="shape-panel">
         <div id="shape-panel-header">
-            <h4>📐 Shape Library</h4>
-            <div id="category-tabs"><!-- populated by JS --></div>
+            <div id="header-text">
+                <h4>📐 Shapes</h4>
+                <div id="category-tabs"><!-- populated by JS --></div>
+            </div>
+            <button id="panel-toggle" title="Collapse / expand shape panel">◀</button>
         </div>
-        <div id="shape-list"><!-- populated by JS --></div>
-        <div id="shape-panel-footer">
-            <button id="clear-btn">✕ Deselect shape [Esc]</button>
-            Click a shape then click the grid to place it.
+        <div class="panel-body" id="shape-list-wrap" style="display:contents">
+            <div id="shape-list"><!-- populated by JS --></div>
+            <div id="shape-panel-footer">
+                <button id="clear-btn">✕ Deselect shape [Esc]</button>
+                Click a shape then click the grid to place it.
+            </div>
         </div>
     </div>
 
