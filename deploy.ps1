@@ -47,7 +47,7 @@ $ConnectorName = "golive-connector"
 $Network = "default"
 
 if (-not $ProjectId) {
-    Write-Error "Could not detect GCP project. Pass -ProjectId or run: gcloud config set project YOUR_PROJECT"
+    Write-Host "ERROR: Could not detect GCP project. Pass -ProjectId or run: gcloud config set project YOUR_PROJECT" -ForegroundColor Red
     exit 1
 }
 
@@ -102,7 +102,7 @@ $RedisHost = gcloud redis instances describe $RedisName `
     --format="value(host)" 2>$null
 
 if (-not $RedisHost) {
-    Write-Error "Could not find Memorystore instance '$RedisName' in $Region. Run: ./deploy.ps1 -Init"
+    Write-Host "ERROR: Could not find Memorystore instance $RedisName in $Region. Run: ./deploy.ps1 -Init" -ForegroundColor Red
     exit 1
 }
 $RedisAddr = "${RedisHost}:6379"
