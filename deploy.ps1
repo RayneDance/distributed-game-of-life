@@ -59,6 +59,7 @@ function Invoke-Cmd {
 
 # --- Derived names ---
 $RepoName = "golive-repo"
+$ConnectorName = "golive-connector"
 $ImageBase = "$Region-docker.pkg.dev/$ProjectId/$RepoName/$ServiceName"
 $ImageTag = "${ImageBase}:$(git rev-parse --short HEAD)"
 
@@ -85,6 +86,12 @@ if ($Init) {
     }
 
     Write-Host ""
+    Write-Host "[1.5/3] Enabling VPC Access API..." -ForegroundColor Yellow
+    Invoke-Cmd "gcloud services enable vpcaccess" {
+        gcloud services enable vpcaccess.googleapis.com --project $ProjectId
+    }
+
+    Write-Host ""
     Write-Host "[2/3] Creating Artifact Registry repository..." -ForegroundColor Yellow
     Invoke-Cmd "gcloud artifacts repositories create" {
         gcloud artifacts repositories create $RepoName `
@@ -108,6 +115,16 @@ if ($Init) {
             --member="serviceAccount:$RunSA" `
             --role="roles/secretmanager.secretAccessor" `
             --quiet
+    }
+
+    Write-Host ""
+    Write-Host "[4/4] Creating Serverless VPC Connector (Cloud Run -> Memorystore)..." -ForegroundColor Yellow
+    Invoke-Cmd "gcloud vpc-access connectors create" {
+        gcloud compute networks vpc-access connectors create $ConnectorName `
+            --region=$Region `
+            --network=default `
+            --range="10.8.0.0/28" `
+            --project $ProjectId
     }
 
     Write-Host ""
@@ -163,6 +180,8 @@ Write-Host "  Image pushed: $ImageTag" -ForegroundColor Green
 Write-Host ""
 Write-Host "[2/2] Deploying to Cloud Run..." -ForegroundColor Yellow
 
+$ConnectorFull = "projects/$ProjectId/locations/$Region/connectors/$ConnectorName"
+
 Invoke-Cmd "gcloud run deploy" {
     gcloud run deploy $ServiceName `
         --image=$ImageTag `
@@ -177,6 +196,8 @@ Invoke-Cmd "gcloud run deploy" {
         --memory=1Gi `
         --concurrency=1000 `
         --timeout=3600 `
+        --vpc-connector=$ConnectorFull `
+        --vpc-egress=private-ranges-only `
         --session-affinity
 }
 
