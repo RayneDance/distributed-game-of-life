@@ -240,6 +240,21 @@ func (a *chunkActorImpl) run() {
 		case <-a.tickChan:
 			start := time.Now()
 
+			// Eagerly drain any halos that arrived concurrently with this tick
+			// signal. TickAll sends all halos before sending any ticks, so every
+			// halo for this round is already in the channel, but Go's select is
+			// non-deterministic — the tick case can fire before haloChan cases
+			// do. Draining here guarantees complete cross-chunk boundary data.
+		drainHalos:
+			for {
+				select {
+				case req := <-a.haloChan:
+					pendingHalos[req.neighborID] = req.haloData
+				default:
+					break drainHalos
+				}
+			}
+
 			// 1. Build the superset of all relevant cells in absolute coords.
 			//    Halo cells must be included for correct boundary behaviour.
 			allCells := make(map[Point]struct{})
