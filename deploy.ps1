@@ -44,6 +44,19 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# Invoke-Cmd runs an external command and halts the script on non-zero exit.
+# $ErrorActionPreference = "Stop" only catches PowerShell cmdlet errors;
+# external programs (docker, gcloud) must be checked via $LASTEXITCODE.
+function Invoke-Cmd {
+    param([string]$Description, [scriptblock]$Command)
+    Write-Host "  > $Description" -ForegroundColor DarkGray
+    & $Command
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: '$Description' failed (exit code $LASTEXITCODE)." -ForegroundColor Red
+        exit $LASTEXITCODE
+    }
+}
+
 # --- Derived names ---
 $RepoName = "golive-repo"
 $ImageBase = "$Region-docker.pkg.dev/$ProjectId/$RepoName/$ServiceName"
@@ -63,32 +76,39 @@ Write-Host "Image   : $ImageTag"  -ForegroundColor Cyan
 if ($Init) {
     Write-Host ""
     Write-Host "[1/3] Enabling required APIs..." -ForegroundColor Yellow
-    gcloud services enable `
-        artifactregistry.googleapis.com `
-        run.googleapis.com `
-        secretmanager.googleapis.com `
-        --project $ProjectId
+    Invoke-Cmd "gcloud services enable" {
+        gcloud services enable `
+            artifactregistry.googleapis.com `
+            run.googleapis.com `
+            secretmanager.googleapis.com `
+            --project $ProjectId
+    }
 
     Write-Host ""
     Write-Host "[2/3] Creating Artifact Registry repository..." -ForegroundColor Yellow
-    gcloud artifacts repositories create $RepoName `
-        --repository-format=docker `
-        --location=$Region `
-        --description="Game of Life container images" `
-        --project $ProjectId
+    Invoke-Cmd "gcloud artifacts repositories create" {
+        gcloud artifacts repositories create $RepoName `
+            --repository-format=docker `
+            --location=$Region `
+            --description="Game of Life container images" `
+            --project $ProjectId
+    }
 
     Write-Host ""
     Write-Host "[3/3] Granting Cloud Run service account access to secrets..." -ForegroundColor Yellow
-
-    # Cloud Run uses the default Compute Engine service account.
-    # Derive it from the project number.
     $ProjectNumber = gcloud projects describe $ProjectId --format="value(projectNumber)"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Could not retrieve project number for $ProjectId." -ForegroundColor Red
+        exit 1
+    }
     $RunSA = "$ProjectNumber-compute@developer.gserviceaccount.com"
 
-    gcloud projects add-iam-policy-binding $ProjectId `
-        --member="serviceAccount:$RunSA" `
-        --role="roles/secretmanager.secretAccessor" `
-        --quiet
+    Invoke-Cmd "gcloud projects add-iam-policy-binding" {
+        gcloud projects add-iam-policy-binding $ProjectId `
+            --member="serviceAccount:$RunSA" `
+            --role="roles/secretmanager.secretAccessor" `
+            --quiet
+    }
 
     Write-Host ""
     Write-Host "Setup complete." -ForegroundColor Green
@@ -110,7 +130,7 @@ Write-Host ""
 Write-Host "Verifying secrets in Secret Manager..." -ForegroundColor Yellow
 foreach ($SecretName in @("REDIS_ADDR", "REDIS_PASSWORD")) {
     $exists = gcloud secrets describe $SecretName --project $ProjectId --format="value(name)" 2>$null
-    if (-not $exists) {
+    if ($LASTEXITCODE -ne 0 -or -not $exists) {
         Write-Host "ERROR: Secret $SecretName not found in project $ProjectId." -ForegroundColor Red
         Write-Host "       Create it or run ./deploy.ps1 -Init for instructions." -ForegroundColor Red
         exit 1
@@ -121,34 +141,50 @@ foreach ($SecretName in @("REDIS_ADDR", "REDIS_PASSWORD")) {
 # --- Build and push image ---
 Write-Host ""
 Write-Host "[1/2] Building and pushing image..." -ForegroundColor Yellow
-gcloud auth configure-docker "$Region-docker.pkg.dev" --quiet
-docker build --platform linux/amd64 -t $ImageTag .
-docker push $ImageTag
+
+Invoke-Cmd "gcloud auth configure-docker" {
+    gcloud auth configure-docker "$Region-docker.pkg.dev" --quiet
+}
+
+Invoke-Cmd "docker build" {
+    docker build --platform linux/amd64 -t $ImageTag .
+}
+
+Invoke-Cmd "docker push" {
+    docker push $ImageTag
+}
+
 Write-Host "  Image pushed: $ImageTag" -ForegroundColor Green
 
 # --- Deploy to Cloud Run ---
 Write-Host ""
 Write-Host "[2/2] Deploying to Cloud Run..." -ForegroundColor Yellow
 
-gcloud run deploy $ServiceName `
-    --image=$ImageTag `
-    --region=$Region `
-    --project=$ProjectId `
-    --platform=managed `
-    --allow-unauthenticated `
-    --port=8080 `
-    --min-instances=1 `
-    --max-instances=1 `
-    --cpu=2 `
-    --memory=1Gi `
-    --concurrency=1000 `
-    --timeout=3600 `
-    --session-affinity
+Invoke-Cmd "gcloud run deploy" {
+    gcloud run deploy $ServiceName `
+        --image=$ImageTag `
+        --region=$Region `
+        --project=$ProjectId `
+        --platform=managed `
+        --allow-unauthenticated `
+        --port=8080 `
+        --min-instances=1 `
+        --max-instances=1 `
+        --cpu=2 `
+        --memory=1Gi `
+        --concurrency=1000 `
+        --timeout=3600 `
+        --session-affinity
+}
 
 $ServiceUrl = gcloud run services describe $ServiceName `
     --region=$Region `
     --project=$ProjectId `
     --format="value(status.url)"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: Could not retrieve service URL." -ForegroundColor Red
+    exit 1
+}
 
 $WssUrl = $ServiceUrl -replace 'https', 'wss'
 
