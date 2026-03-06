@@ -111,31 +111,58 @@ func (r *Registry) GetOrCreate(id ChunkID) ChunkActor {
 	return actor
 }
 
-// SnapshotChunk returns the current cell snapshot for a chunk if it has an
-// active actor, or nil if the chunk is hibernated / unknown.
-// Used by the gateway to immediately push state to newly-subscribed clients.
-func (r *Registry) SnapshotChunk(id ChunkID) []uint16 {
+// PeekChunk returns the current cell snapshot for a chunk without side-effects.
+//
+// If an actor is already running its live state is returned. Otherwise the
+// configured Load callback is called to read persisted state directly from
+// storage — no actor goroutine is created. Returns nil for empty/unknown chunks.
+//
+// Use this from the subscribe handler so that viewing an empty chunk does not
+// spin up a goroutine that will only idle and then log a spurious hibernation.
+func (r *Registry) PeekChunk(id ChunkID) []uint16 {
 	r.mu.RLock()
 	actor, exists := r.chunks[id]
 	r.mu.RUnlock()
-	if !exists {
+	if exists {
+		return actor.chunk.Snapshot()
+	}
+	if r.cfg.Load == nil {
 		return nil
 	}
-	return actor.chunk.Snapshot()
+	chunk, err := r.cfg.Load(id)
+	if err != nil || chunk == nil {
+		return nil
+	}
+	return chunk.Snapshot()
+}
+
+// hasCellsNearEdge reports whether any cell in cells is within reach (≤ 2 rows/cols)
+// of the face of this chunk that borders the neighbour at offset (dx, dy).
+// This avoids waking hibernated neighbours that could not possibly be affected.
+func hasCellsNearEdge(cells []uint16, dx, dy int64) bool {
+	const near = int64(2) // GoL birth range is 1; +1 for safety
+	for _, offset := range cells {
+		x := int64(offset % ChunkSize)
+		y := int64(offset / ChunkSize)
+		xOk := (dx == -1 && x <= near) || (dx == 1 && x >= ChunkSize-1-near) || dx == 0
+		yOk := (dy == -1 && y <= near) || (dy == 1 && y >= ChunkSize-1-near) || dy == 0
+		if xOk && yOk {
+			return true
+		}
+	}
+	return false
 }
 
 // TickAll advances every active chunk by one generation.
 // It must be called by an external timer (e.g. time.Ticker in main.go).
 //
 // The sequence is:
-//  1. Snapshot every active chunk's cells while holding the read lock.
-//  2. For each chunk, send its edge cells as halo data to each of its 8 neighbours
-//     (only if that neighbour already has an active actor; we don't wake hibernated
-//     chunks for halos they don't need).
+//  1. Snapshot every active chunk's cells.
+//  2. For each chunk that has cells near a boundary, wake (GetOrCreate) the
+//     neighbouring chunk and send it halo data so cross-boundary births work.
 //  3. Send a tick signal to every actor goroutine.
 func (r *Registry) TickAll(ctx context.Context) {
 	r.mu.RLock()
-	// Snapshot all actors so we can release the lock before doing channel sends.
 	type entry struct {
 		id    ChunkID
 		actor *chunkActorImpl
@@ -154,25 +181,33 @@ func (r *Registry) TickAll(ctx context.Context) {
 		{-1, 1}, {0, 1}, {1, 1},
 	}
 
-	// Send halos to neighbours that have active actors.
+	// Distribute halo data to neighbours.
+	// GetOrCreate is called only when the sending chunk actually has cells
+	// near the shared face — this prevents unconditionally waking all 8
+	// neighbours of every active chunk and avoids the hibernation spam.
 	for _, e := range entries {
 		if len(e.cells) == 0 {
-			continue // No live cells → nothing useful to share as a halo.
+			continue
 		}
 		for _, off := range neighbourOffsets {
-			nid := ChunkID{X: e.id.X + off[0], Y: e.id.Y + off[1]}
-			r.mu.RLock()
-			neighbour, exists := r.chunks[nid]
-			r.mu.RUnlock()
-			if exists {
-				neighbour.ReceiveHalo(ctx, e.id, e.cells) //nolint:errcheck
+			if !hasCellsNearEdge(e.cells, off[0], off[1]) {
+				continue
 			}
+			nid := ChunkID{X: e.id.X + off[0], Y: e.id.Y + off[1]}
+			neighbour := r.GetOrCreate(nid)
+			neighbour.ReceiveHalo(ctx, e.id, e.cells) //nolint:errcheck
 		}
 	}
 
-	// Tick every actor.
-	for _, e := range entries {
-		e.actor.Tick(ctx) //nolint:errcheck
+	// Tick every actor (the set may have grown from GetOrCreate calls above).
+	r.mu.RLock()
+	allActors := make([]*chunkActorImpl, 0, len(r.chunks))
+	for _, a := range r.chunks {
+		allActors = append(allActors, a)
+	}
+	r.mu.RUnlock()
+	for _, a := range allActors {
+		a.Tick(ctx) //nolint:errcheck
 	}
 }
 
@@ -334,7 +369,6 @@ func (a *chunkActorImpl) hibernate() {
 				a.chunk.ID.X, a.chunk.ID.Y, err)
 		}
 	}
-	log.Printf("chunk (%d,%d): hibernating (idle for %d ticks)",
-		a.chunk.ID.X, a.chunk.ID.Y, hibernationThreshold)
+	// Hibernation is normal lifecycle management — not logged at INFO level.
 	a.registry.evict(a.chunk.ID)
 }

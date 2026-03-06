@@ -85,11 +85,10 @@ func (r *Router) Route(ctx context.Context, playerID string, msg IncomingMessage
 		for _, ref := range cmd.Chunks {
 			id := simulation.ChunkID{X: ref.X, Y: ref.Y}
 			r.pubsub.Subscribe(id, client)
-			// Immediately flush current state so the client doesn't have to wait
-			// for the next tick to see already-live cells. GetOrCreate also
-			// hydrates hibernated chunks from Redis at this point.
-			r.registry.GetOrCreate(id) // ensure actor exists and is loaded
-			if cells := r.registry.SnapshotChunk(id); len(cells) > 0 {
+			// Immediately flush current state so the client doesn't wait for the
+			// next tick. PeekChunk reads from an existing actor OR falls back to
+			// storage without creating a new actor for empty chunks.
+			if cells := r.registry.PeekChunk(id); len(cells) > 0 {
 				client.WriteJSON(OutgoingMessage{
 					Type:    "CHUNK_STATE",
 					Payload: ChunkStatePayload{X: ref.X, Y: ref.Y, Cells: cells},
