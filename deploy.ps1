@@ -8,7 +8,7 @@
     (or re-deploys) the Cloud Run service.
 
     REDIS_ADDR and REDIS_PASSWORD are read from Cloud Secret Manager at
-    runtime by Cloud Run — they are never stored in environment variables
+    runtime by the application. They are never stored in environment variables
     or passed through this script.
 
     Run with -Init on the very first deploy to create the Artifact Registry
@@ -44,7 +44,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ── Derived names ─────────────────────────────────────────────────────────────
+# --- Derived names ---
 $RepoName = "golive-repo"
 $ImageBase = "$Region-docker.pkg.dev/$ProjectId/$RepoName/$ServiceName"
 $ImageTag = "${ImageBase}:$(git rev-parse --short HEAD)"
@@ -59,26 +59,29 @@ Write-Host "Region  : $Region"    -ForegroundColor Cyan
 Write-Host "Service : $ServiceName" -ForegroundColor Cyan
 Write-Host "Image   : $ImageTag"  -ForegroundColor Cyan
 
-# ── First-time setup ─────────────────────────────────────────────────────────
+# --- First-time setup ---
 if ($Init) {
-    Write-Host "`n[1/3] Enabling required APIs..." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "[1/3] Enabling required APIs..." -ForegroundColor Yellow
     gcloud services enable `
         artifactregistry.googleapis.com `
         run.googleapis.com `
         secretmanager.googleapis.com `
         --project $ProjectId
 
-    Write-Host "`n[2/3] Creating Artifact Registry repository..." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "[2/3] Creating Artifact Registry repository..." -ForegroundColor Yellow
     gcloud artifacts repositories create $RepoName `
         --repository-format=docker `
         --location=$Region `
         --description="Game of Life container images" `
         --project $ProjectId
 
-    Write-Host "`n[3/3] Granting Cloud Run service account access to secrets..." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "[3/3] Granting Cloud Run service account access to secrets..." -ForegroundColor Yellow
 
-    # Cloud Run uses the default Compute Engine service account unless a custom
-    # one is configured. Derive it from the project number.
+    # Cloud Run uses the default Compute Engine service account.
+    # Derive it from the project number.
     $ProjectNumber = gcloud projects describe $ProjectId --format="value(projectNumber)"
     $RunSA = "$ProjectNumber-compute@developer.gserviceaccount.com"
 
@@ -87,38 +90,45 @@ if ($Init) {
         --role="roles/secretmanager.secretAccessor" `
         --quiet
 
-    Write-Host "`nSetup complete." -ForegroundColor Green
-    Write-Host "Before deploying, make sure the following secrets exist in Secret Manager:" -ForegroundColor Yellow
-    Write-Host "  REDIS_ADDR     — e.g. 10.0.0.3:6379 or your-redis-host:6379" -ForegroundColor White
-    Write-Host "  REDIS_PASSWORD — the AUTH password for your Redis instance" -ForegroundColor White
-    Write-Host "`nCreate them with:" -ForegroundColor Yellow
-    Write-Host '  echo -n "host:port" | gcloud secrets create REDIS_ADDR --data-file=- --project ' + $ProjectId -ForegroundColor White
-    Write-Host '  echo -n "yourpassword" | gcloud secrets create REDIS_PASSWORD --data-file=- --project ' + $ProjectId -ForegroundColor White
-    Write-Host "`nThen run ./deploy.ps1 to deploy." -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Setup complete." -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Before deploying, ensure the following secrets exist in Secret Manager:" -ForegroundColor Yellow
+    Write-Host "  REDIS_ADDR     - e.g. 10.0.0.3:6379 or your-redis-host:6379" -ForegroundColor White
+    Write-Host "  REDIS_PASSWORD - the AUTH password for your Redis instance" -ForegroundColor White
+    Write-Host ""
+    Write-Host "Create them like this:" -ForegroundColor Yellow
+    Write-Host "  echo -n 'host:port' | gcloud secrets create REDIS_ADDR --data-file=- --project $ProjectId" -ForegroundColor White
+    Write-Host "  echo -n 'password'  | gcloud secrets create REDIS_PASSWORD --data-file=- --project $ProjectId" -ForegroundColor White
+    Write-Host ""
+    Write-Host "Then run ./deploy.ps1 to deploy." -ForegroundColor Green
     exit 0
 }
 
-# ── Verify secrets exist before attempting deploy ─────────────────────────────
-Write-Host "`nVerifying secrets exist in Secret Manager..." -ForegroundColor Yellow
+# --- Verify secrets exist before attempting deploy ---
+Write-Host ""
+Write-Host "Verifying secrets in Secret Manager..." -ForegroundColor Yellow
 foreach ($SecretName in @("REDIS_ADDR", "REDIS_PASSWORD")) {
     $exists = gcloud secrets describe $SecretName --project $ProjectId --format="value(name)" 2>$null
     if (-not $exists) {
-        Write-Host "ERROR: Secret '$SecretName' not found in project $ProjectId." -ForegroundColor Red
+        Write-Host "ERROR: Secret $SecretName not found in project $ProjectId." -ForegroundColor Red
         Write-Host "       Create it or run ./deploy.ps1 -Init for instructions." -ForegroundColor Red
         exit 1
     }
-    Write-Host "  $SecretName — found" -ForegroundColor Green
+    Write-Host "  $SecretName - OK" -ForegroundColor Green
 }
 
-# ── Build & push image ────────────────────────────────────────────────────────
-Write-Host "`n[1/2] Building and pushing image..." -ForegroundColor Yellow
+# --- Build and push image ---
+Write-Host ""
+Write-Host "[1/2] Building and pushing image..." -ForegroundColor Yellow
 gcloud auth configure-docker "$Region-docker.pkg.dev" --quiet
 docker build --platform linux/amd64 -t $ImageTag .
 docker push $ImageTag
 Write-Host "  Image pushed: $ImageTag" -ForegroundColor Green
 
-# ── Deploy to Cloud Run ───────────────────────────────────────────────────────
-Write-Host "`n[2/2] Deploying to Cloud Run..." -ForegroundColor Yellow
+# --- Deploy to Cloud Run ---
+Write-Host ""
+Write-Host "[2/2] Deploying to Cloud Run..." -ForegroundColor Yellow
 
 gcloud run deploy $ServiceName `
     --image=$ImageTag `
