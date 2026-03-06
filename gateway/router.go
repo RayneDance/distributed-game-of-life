@@ -86,10 +86,11 @@ func (r *Router) Route(ctx context.Context, playerID string, msg IncomingMessage
 	// by the piece editor on the client.  The server validates:
 	//   • Every offset is within the 100×100 custom-piece grid (0–99 inclusive).
 	//   • The de-duplicated cell count does not exceed 10 000.
-	//   • The player has enough rate-limit tokens to cover each cell.
-	// Pieces larger than LargeCustomThreshold additionally incur a penalty of
-	// LargeCustomPenalty extra tokens so that massive pieces impose a meaningful
-	// cooldown before the next placement.
+	// Unlike PLACE_SHAPE, custom pieces are ALWAYS placed regardless of whether
+	// the player's token bucket is full; the bucket is drained as much as
+	// possible (clamped at 0) to impose a cooldown. Only the global server-wide
+	// cap can hard-reject a request, protecting server load.
+	// Pieces exceeding LargeCustomThreshold cells incur an additional penalty.
 	case "PLACE_CUSTOM":
 		const LargeCustomPenalty = 25 // extra tokens drained for pieces ≥ LargeCustomThreshold
 
@@ -108,18 +109,23 @@ func (r *Router) Route(ctx context.Context, playerID string, msg IncomingMessage
 			return
 		}
 
-		// Charge one token per unique cell.
-		if !r.chargeN(ctx, playerID, client, len(validCells)) {
+		// Compute total desired penalty: 1 token per cell + flat penalty for
+		// large pieces. DrainN will consume as many as are available (≥ 0),
+		// always allowing placement. Returns 0 only if the global bucket is
+		// exhausted, in which case we reject to protect server-wide load.
+		tokensWanted := len(validCells)
+		if len(validCells) > LargeCustomThreshold {
+			tokensWanted += LargeCustomPenalty
+		}
+		consumed, err := r.limiter.DrainN(ctx, playerID, time.Now().Unix(), tokensWanted)
+		if err != nil {
+			sendError(client, "INTERNAL_ERROR", "Rate limiter unavailable")
 			return
 		}
-
-		// Extra cooldown for large pieces (> LargeCustomThreshold cells).
-		if len(validCells) > LargeCustomThreshold {
-			if !r.chargeN(ctx, playerID, client, LargeCustomPenalty) {
-				// Penalty couldn't be charged — still proceed with placement
-				// (cell tokens already consumed), just log the edge case.
-				// The player is already at or near zero anyway.
-			}
+		if consumed == 0 && tokensWanted > 0 {
+			// Global bucket exhausted — hard reject to protect server load.
+			sendError(client, "RATE_LIMITED", "Server is busy — try again shortly")
+			return
 		}
 
 		// Spawn all validated cells.
