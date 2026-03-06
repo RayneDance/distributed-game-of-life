@@ -57,8 +57,12 @@ type chunkActorImpl struct {
 	chunk     *Chunk
 	spawnChan chan spawnReq
 	haloChan  chan haloReq
-	tickChan  chan struct{}
-	registry  *Registry
+	// tickChan carries a *sync.WaitGroup so TickAll can block until the actor
+	// signals wg.Done() after completing its tick computation. This is the
+	// lockstep barrier: no actor receives generation N+1 halos until all actors
+	// have finished computing generation N.
+	tickChan chan *sync.WaitGroup
+	registry *Registry
 }
 
 type spawnReq struct{ x, y uint8 }
@@ -101,8 +105,8 @@ func (r *Registry) GetOrCreate(id ChunkID) ChunkActor {
 	actor = &chunkActorImpl{
 		chunk:     chunk,
 		spawnChan: make(chan spawnReq, 100),
-		haloChan:  make(chan haloReq, 16), // 16: headroom for all 8 neighbours × 2 rounds
-		tickChan:  make(chan struct{}, 1),
+		haloChan:  make(chan haloReq, 16), // 16: one round × 8 neighbours (barrier ensures no overlap)
+		tickChan:  make(chan *sync.WaitGroup, 1),
 		registry:  r,
 	}
 	r.chunks[id] = actor
@@ -203,16 +207,25 @@ func (r *Registry) TickAll(ctx context.Context) {
 		}
 	}
 
-	// Tick every actor (the set may have grown from GetOrCreate calls above).
+	// Tick every actor and wait for all of them to finish before returning.
+	//
+	// The WaitGroup is the lockstep barrier: TickAll blocks here until every
+	// active chunk has completed generation N. Only then does the external
+	// ticker fire again, preventing any actor from seeing generation N+1
+	// halo data before it has finished computing generation N.
 	r.mu.RLock()
 	allActors := make([]*chunkActorImpl, 0, len(r.chunks))
 	for _, a := range r.chunks {
 		allActors = append(allActors, a)
 	}
 	r.mu.RUnlock()
+
+	var wg sync.WaitGroup
+	wg.Add(len(allActors))
 	for _, a := range allActors {
-		a.Tick(ctx) //nolint:errcheck
+		a.Tick(ctx, &wg) //nolint:errcheck
 	}
+	wg.Wait()
 }
 
 // evict removes the actor from the registry (called by the actor itself on hibernation).
@@ -243,12 +256,30 @@ func (a *chunkActorImpl) ReceiveHalo(ctx context.Context, neighborID ChunkID, ha
 	}
 }
 
-func (a *chunkActorImpl) Tick(ctx context.Context) error {
+// Tick enqueues a tick signal carrying the WaitGroup that TickAll is blocking
+// on. The actor calls wg.Done() when it finishes computing the generation,
+// releasing TickAll's barrier.
+//
+// The default case handles the extremely unlikely race where GetOrCreate spun
+// up a brand-new actor between the halo phase and the tick phase of the same
+// TickAll call — that actor has no generation-N state to advance, so we skip
+// it and immediately release our count from the WaitGroup.
+func (a *chunkActorImpl) Tick(ctx context.Context, wg *sync.WaitGroup) error {
 	select {
-	case a.tickChan <- struct{}{}:
+	case a.tickChan <- wg:
 		return nil
 	case <-ctx.Done():
+		wg.Done()
 		return ctx.Err()
+	default:
+		// tickChan is full: the previous tick hasn't been consumed yet.
+		// This should never happen under the barrier scheme (TickAll waits for
+		// wg.Wait() before the ticker fires again), but guard against it rather
+		// than blocking. Release the WaitGroup count so TickAll doesn't hang.
+		log.Printf("chunk (%d,%d): tick channel full, skipping generation (actor is behind)",
+			a.chunk.ID.X, a.chunk.ID.Y)
+		wg.Done()
+		return nil
 	}
 }
 
@@ -276,7 +307,7 @@ func (a *chunkActorImpl) run() {
 			pendingHalos[req.neighborID] = req.haloData
 			idleTicks = 0
 
-		case <-a.tickChan:
+		case wg := <-a.tickChan:
 			start := time.Now()
 
 			// Eagerly drain any halos that arrived concurrently with this tick
@@ -338,10 +369,14 @@ func (a *chunkActorImpl) run() {
 				fn(a.chunk.ID, a.chunk.Snapshot())
 			}
 
-			// 6. Reset halo buffers for the next tick cycle.
+			// 6. Signal the barrier *before* hibernation checks so TickAll is never
+			//    held waiting on an actor that is about to exit.
+			wg.Done()
+
+			// 7. Reset halo buffers for the next tick cycle.
 			pendingHalos = make(map[ChunkID][]uint16)
 
-			// 7. Hibernation: an empty chunk with no subscribers and no pending
+			// 8. Hibernation: an empty chunk with no subscribers and no pending
 			//    work is a candidate for graceful shutdown.
 			a.chunk.mu.RLock()
 			activeCount := len(a.chunk.ActiveCells)
