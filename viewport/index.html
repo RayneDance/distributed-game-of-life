@@ -245,7 +245,14 @@
             background: transparent;
         }
 
+        .shape-row {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
         .shape-btn {
+            flex: 1;
             display: flex;
             align-items: center;
             gap: 10px;
@@ -259,6 +266,37 @@
             color: rgba(255, 255, 255, 0.75);
             font-family: inherit;
             font-size: 11px;
+            min-width: 0;
+        }
+
+        .shape-action-btn {
+            flex-shrink: 0;
+            width: 26px;
+            height: 26px;
+            border-radius: 5px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.03);
+            color: rgba(255, 255, 255, 0.35);
+            font-size: 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s ease;
+            font-family: inherit;
+            padding: 0;
+        }
+
+        .shape-action-btn.edit:hover {
+            background: rgba(0, 170, 255, 0.15);
+            border-color: rgba(0, 170, 255, 0.4);
+            color: #40d0ff;
+        }
+
+        .shape-action-btn.delete:hover {
+            background: rgba(255, 80, 80, 0.15);
+            border-color: rgba(255, 80, 80, 0.4);
+            color: #ff6666;
         }
 
         .shape-btn:hover {
@@ -428,7 +466,7 @@
 
         #editor-meta {
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
+            grid-template-columns: 1fr 1fr;
             gap: 10px;
         }
 
@@ -624,10 +662,6 @@
             </div>
 
             <div id="editor-meta">
-                <div class="editor-field">
-                    <label for="editor-key">Key (unique id)</label>
-                    <input type="text" id="editor-key" placeholder="my-glider" />
-                </div>
                 <div class="editor-field">
                     <label for="editor-label">Display name</label>
                     <input type="text" id="editor-label" placeholder="My Glider" />

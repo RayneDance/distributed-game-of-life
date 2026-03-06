@@ -222,6 +222,11 @@ function populateShapes() {
         .sort(([, a], [, b]) => a.label.localeCompare(b.label));
 
     for (const [key, def] of entries) {
+        const isCustom = customPieces.has(key);
+
+        const row = document.createElement('div');
+        row.className = 'shape-row';
+
         const btn = document.createElement('button');
         btn.className = 'shape-btn' + (key === selectedShape ? ' selected' : '');
         btn.id = `shape-btn-${key}`;
@@ -240,7 +245,36 @@ function populateShapes() {
         btn.appendChild(preview);
         btn.appendChild(label);
         btn.addEventListener('click', () => selectShape(key));
-        shapeList.appendChild(btn);
+        row.appendChild(btn);
+
+        if (isCustom) {
+            const editBtn = document.createElement('button');
+            editBtn.className = 'shape-action-btn edit';
+            editBtn.title = 'Edit piece';
+            editBtn.textContent = '✏';
+            editBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                openEditor(key);
+            });
+
+            const delBtn = document.createElement('button');
+            delBtn.className = 'shape-action-btn delete';
+            delBtn.title = 'Delete piece';
+            delBtn.textContent = '✕';
+            delBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (selectedShape === key) selectShape(null);
+                delete catalog[key];
+                customPieces.delete(key);
+                buildPanel();
+                showToast(`"${def.label}" deleted`, '#ff6666');
+            });
+
+            row.appendChild(editBtn);
+            row.appendChild(delBtn);
+        }
+
+        shapeList.appendChild(row);
     }
 }
 
@@ -763,7 +797,6 @@ draw();
     const overlay = document.getElementById('piece-editor-overlay');
     const edCanvas = document.getElementById('editor-canvas');
     const edCtx = edCanvas.getContext('2d');
-    const keyInput = document.getElementById('editor-key');
     const labelInput = document.getElementById('editor-label');
     const catInput = document.getElementById('editor-category');
     const drawBtn = document.getElementById('ed-draw-btn');
@@ -979,14 +1012,32 @@ draw();
     });
 
     // ── open / close ──
-    function openEditor() {
+    // editKey: if set, pre-populate the canvas with that piece for editing.
+    function openEditor(editKey = null) {
         resetEdCells();
         edUpdateCount();
         setEdMode('draw');
-        keyInput.value = '';
-        labelInput.value = '';
-        catInput.value = 'Custom';
+        overlay.dataset.editKey = editKey || '';
+
+        if (editKey && catalog[editKey]) {
+            // Pre-populate fields and canvas from the existing piece.
+            const def = catalog[editKey];
+            labelInput.value = def.label;
+            catInput.value = def.category;
+            // Paint the existing cells into the editor grid.
+            for (const c of def.cells) {
+                if (c.y >= 0 && c.y < GRID_H && c.x >= 0 && c.x < GRID_W) {
+                    if (!edCells[c.y]) edCells[c.y] = [];
+                    edCells[c.y][c.x] = true;
+                }
+            }
+        } else {
+            labelInput.value = '';
+            catInput.value = 'Custom';
+        }
+
         overlay.classList.add('open');
+        edUpdateCount();
         edCenterView();
         edDraw();
     }
@@ -1015,14 +1066,12 @@ draw();
 
     // ── accept ──
     acceptBtn.addEventListener('click', () => {
-        const key = keyInput.value.trim().toLowerCase().replace(/\s+/g, '-');
         const label = labelInput.value.trim();
         const category = catInput.value.trim() || 'Custom';
 
-        if (!key) { showToast('⚠ Key is required', '#ffaa00'); return; }
         if (!label) { showToast('⚠ Display name is required', '#ffaa00'); return; }
 
-        // Build cells array: {x, y} offsets relative to bounding-box top-left
+        // Build cells array: {x, y} offsets relative to bounding-box top-left.
         const rawCells = [];
         for (let y = 0; y < GRID_H; y++)
             for (let x = 0; x < GRID_W; x++)
@@ -1030,19 +1079,26 @@ draw();
 
         if (rawCells.length === 0) { showToast('⚠ Draw at least one cell', '#ffaa00'); return; }
 
-        // Normalize: subtract bounding-box min so offsets start at (0,0)
+        // Normalize: subtract bounding-box min so offsets start at (0,0).
         const minX = Math.min(...rawCells.map(c => c.x));
         const minY = Math.min(...rawCells.map(c => c.y));
         const cells = rawCells.map(c => ({ x: c.x - minX, y: c.y - minY }));
 
-        // Add to the client catalog, marking it as a custom (client-only) piece.
+        // Reuse the existing key when editing; generate a UUID for new pieces.
+        const editKey = overlay.dataset.editKey;
+        const key = editKey || crypto.randomUUID();
+
+        // Add / overwrite in the client catalog and mark as custom.
         catalog[key] = { label, category, cells };
         customPieces.add(key);
 
-        // Rebuild the shape panel to show the new entry
-        buildPanel();
+        // If editing the currently selected shape, refresh the ghost.
+        if (selectedShape === key) {
+            selectShape(key);
+        }
 
-        showToast(`✓ "${label}" added to catalog`, '#00ff88');
+        buildPanel();
+        showToast(editKey ? `✓ "${label}" updated` : `✓ "${label}" added to catalog`, '#00ff88');
         closeEditor();
     });
 })();
