@@ -6,7 +6,10 @@ import (
 )
 
 // off is a shorthand for building ShapeOffset literals.
-type off struct{ X, Y int64 }
+type off struct {
+	X int64 `json:"x"`
+	Y int64 `json:"y"`
+}
 
 // ShapeDef is a named Game of Life pattern stored authoritatively on the server.
 // Clients send only the key + root coordinate — the server expands the cells.
