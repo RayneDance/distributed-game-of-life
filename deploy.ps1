@@ -5,27 +5,33 @@
 
 .DESCRIPTION
     Builds the Docker image, pushes it to Artifact Registry, and deploys
-    (or re-deploys) the Cloud Run service.  Run with -Init on the very first
-    deploy to create the Artifact Registry repository and Memorystore instance.
+    (or re-deploys) the Cloud Run service.
+
+    REDIS_ADDR and REDIS_PASSWORD are read from Cloud Secret Manager at
+    runtime by Cloud Run — they are never stored in environment variables
+    or passed through this script.
+
+    Run with -Init on the very first deploy to create the Artifact Registry
+    repository and grant the Cloud Run service account access to secrets.
 
 .PARAMETER ProjectId
     GCP project ID. Defaults to the active gcloud project.
 
 .PARAMETER Region
-    GCP region for Cloud Run and Memorystore. Default: us-central1
+    GCP region for Cloud Run. Default: us-central1
 
 .PARAMETER ServiceName
     Cloud Run service name. Default: golive
 
 .PARAMETER Init
-    Perform first-time infrastructure setup (Artifact Registry repo,
-    Serverless VPC Connector, Memorystore instance).
+    Perform first-time setup: enable APIs, create Artifact Registry repo,
+    and grant the Cloud Run service account Secret Manager access.
 
 .EXAMPLE
     # First-time setup
-    ./deploy.ps1 -ProjectId my-gcp-project -Init
+    ./deploy.ps1 -ProjectId dumb-game-of-life -Init
 
-    # Subsequent deploys
+    # Every subsequent deploy
     ./deploy.ps1
 #>
 param(
@@ -42,83 +48,77 @@ $ErrorActionPreference = "Stop"
 $RepoName = "golive-repo"
 $ImageBase = "$Region-docker.pkg.dev/$ProjectId/$RepoName/$ServiceName"
 $ImageTag = "${ImageBase}:$(git rev-parse --short HEAD)"
-$RedisName = "golive-redis"
-$ConnectorName = "golive-connector"
-$Network = "default"
 
 if (-not $ProjectId) {
     Write-Host "ERROR: Could not detect GCP project. Pass -ProjectId or run: gcloud config set project YOUR_PROJECT" -ForegroundColor Red
     exit 1
 }
 
-Write-Host "▶ Project : $ProjectId" -ForegroundColor Cyan
-Write-Host "▶ Region  : $Region"    -ForegroundColor Cyan
-Write-Host "▶ Service : $ServiceName" -ForegroundColor Cyan
-Write-Host "▶ Image   : $ImageTag"  -ForegroundColor Cyan
+Write-Host "Project : $ProjectId" -ForegroundColor Cyan
+Write-Host "Region  : $Region"    -ForegroundColor Cyan
+Write-Host "Service : $ServiceName" -ForegroundColor Cyan
+Write-Host "Image   : $ImageTag"  -ForegroundColor Cyan
 
-# ── First-time infrastructure ─────────────────────────────────────────────────
+# ── First-time setup ─────────────────────────────────────────────────────────
 if ($Init) {
-    Write-Host "`n[1/4] Enabling required APIs..." -ForegroundColor Yellow
+    Write-Host "`n[1/3] Enabling required APIs..." -ForegroundColor Yellow
     gcloud services enable `
         artifactregistry.googleapis.com `
         run.googleapis.com `
-        redis.googleapis.com `
-        vpcaccess.googleapis.com `
+        secretmanager.googleapis.com `
         --project $ProjectId
 
-    Write-Host "`n[2/4] Creating Artifact Registry repository..." -ForegroundColor Yellow
+    Write-Host "`n[2/3] Creating Artifact Registry repository..." -ForegroundColor Yellow
     gcloud artifacts repositories create $RepoName `
         --repository-format=docker `
         --location=$Region `
         --description="Game of Life container images" `
         --project $ProjectId
 
-    Write-Host "`n[3/4] Creating Memorystore Redis instance (may take ~5 min)..." -ForegroundColor Yellow
-    gcloud redis instances create $RedisName `
-        --size=1 `
-        --region=$Region `
-        --redis-version=redis_7_0 `
-        --tier=STANDARD_HA `
-        --network=$Network `
-        --project $ProjectId
-    Write-Host "  ✓ Redis created. Fetching host..." -ForegroundColor Green
+    Write-Host "`n[3/3] Granting Cloud Run service account access to secrets..." -ForegroundColor Yellow
 
-    Write-Host "`n[4/4] Creating Serverless VPC Connector (Cloud Run → Memorystore)..." -ForegroundColor Yellow
-    gcloud compute networks vpc-access connectors create $ConnectorName `
-        --region=$Region `
-        --network=$Network `
-        --range="10.8.0.0/28" `
-        --project $ProjectId
+    # Cloud Run uses the default Compute Engine service account unless a custom
+    # one is configured. Derive it from the project number.
+    $ProjectNumber = gcloud projects describe $ProjectId --format="value(projectNumber)"
+    $RunSA = "$ProjectNumber-compute@developer.gserviceaccount.com"
 
-    Write-Host "`n✅ Infrastructure ready. Run the script again without -Init to deploy." -ForegroundColor Green
+    gcloud projects add-iam-policy-binding $ProjectId `
+        --member="serviceAccount:$RunSA" `
+        --role="roles/secretmanager.secretAccessor" `
+        --quiet
+
+    Write-Host "`nSetup complete." -ForegroundColor Green
+    Write-Host "Before deploying, make sure the following secrets exist in Secret Manager:" -ForegroundColor Yellow
+    Write-Host "  REDIS_ADDR     — e.g. 10.0.0.3:6379 or your-redis-host:6379" -ForegroundColor White
+    Write-Host "  REDIS_PASSWORD — the AUTH password for your Redis instance" -ForegroundColor White
+    Write-Host "`nCreate them with:" -ForegroundColor Yellow
+    Write-Host '  echo -n "host:port" | gcloud secrets create REDIS_ADDR --data-file=- --project ' + $ProjectId -ForegroundColor White
+    Write-Host '  echo -n "yourpassword" | gcloud secrets create REDIS_PASSWORD --data-file=- --project ' + $ProjectId -ForegroundColor White
+    Write-Host "`nThen run ./deploy.ps1 to deploy." -ForegroundColor Green
     exit 0
 }
 
-# ── Resolve Memorystore IP ────────────────────────────────────────────────────
-Write-Host "`n[1/3] Resolving Memorystore host..." -ForegroundColor Yellow
-$RedisHost = gcloud redis instances describe $RedisName `
-    --region=$Region `
-    --project $ProjectId `
-    --format="value(host)" 2>$null
-
-if (-not $RedisHost) {
-    Write-Host "ERROR: Could not find Memorystore instance $RedisName in $Region. Run: ./deploy.ps1 -Init" -ForegroundColor Red
-    exit 1
+# ── Verify secrets exist before attempting deploy ─────────────────────────────
+Write-Host "`nVerifying secrets exist in Secret Manager..." -ForegroundColor Yellow
+foreach ($SecretName in @("REDIS_ADDR", "REDIS_PASSWORD")) {
+    $exists = gcloud secrets describe $SecretName --project $ProjectId --format="value(name)" 2>$null
+    if (-not $exists) {
+        Write-Host "ERROR: Secret '$SecretName' not found in project $ProjectId." -ForegroundColor Red
+        Write-Host "       Create it or run ./deploy.ps1 -Init for instructions." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  $SecretName — found" -ForegroundColor Green
 }
-$RedisAddr = "${RedisHost}:6379"
-Write-Host "  ✓ Redis at $RedisAddr" -ForegroundColor Green
 
 # ── Build & push image ────────────────────────────────────────────────────────
-Write-Host "`n[2/3] Building and pushing image..." -ForegroundColor Yellow
+Write-Host "`n[1/2] Building and pushing image..." -ForegroundColor Yellow
 gcloud auth configure-docker "$Region-docker.pkg.dev" --quiet
 docker build --platform linux/amd64 -t $ImageTag .
 docker push $ImageTag
-Write-Host "  ✓ Image pushed: $ImageTag" -ForegroundColor Green
+Write-Host "  Image pushed: $ImageTag" -ForegroundColor Green
 
 # ── Deploy to Cloud Run ───────────────────────────────────────────────────────
-Write-Host "`n[3/3] Deploying to Cloud Run..." -ForegroundColor Yellow
-
-$ConnectorFull = "projects/$ProjectId/locations/$Region/connectors/$ConnectorName"
+Write-Host "`n[2/2] Deploying to Cloud Run..." -ForegroundColor Yellow
 
 gcloud run deploy $ServiceName `
     --image=$ImageTag `
@@ -133,9 +133,6 @@ gcloud run deploy $ServiceName `
     --memory=1Gi `
     --concurrency=1000 `
     --timeout=3600 `
-    --set-env-vars="REDIS_ADDR=$RedisAddr" `
-    --vpc-connector=$ConnectorFull `
-    --vpc-egress=private-ranges-only `
     --session-affinity
 
 $ServiceUrl = gcloud run services describe $ServiceName `
@@ -146,7 +143,6 @@ $ServiceUrl = gcloud run services describe $ServiceName `
 $WssUrl = $ServiceUrl -replace 'https', 'wss'
 
 Write-Host ""
-Write-Host "✅ Deploy complete!" -ForegroundColor Green
-Write-Host "   URL      : $ServiceUrl" -ForegroundColor White
-Write-Host "   WebSocket: $WssUrl/ws"  -ForegroundColor White
-Write-Host "   Metrics  : Internal only — scrape via Cloud Monitoring" -ForegroundColor DarkGray
+Write-Host "Deploy complete!" -ForegroundColor Green
+Write-Host "  URL      : $ServiceUrl" -ForegroundColor White
+Write-Host "  WebSocket: $WssUrl/ws"  -ForegroundColor White
