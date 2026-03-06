@@ -1,0 +1,208 @@
+name: Build & Deploy
+
+on:
+  push:
+    # Push to staging → lint then deploy to the staging Cloud Run service.
+    branches:
+      - staging
+    # Push of a semver tag on main → lint then deploy to production.
+    # Create a release with: git tag v1.2.3 && git push origin v1.2.3
+    # The tag MUST point to a commit that is already on main.
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+# Prevent concurrent deploys to the same environment.
+concurrency:
+  group: deploy-${{ startsWith(github.ref, 'refs/tags/') && 'prod' || 'staging' }}
+  cancel-in-progress: false
+
+env:
+  REGION:    us-central1
+  REPO_NAME: golive-repo
+  IMAGE_NAME: golive
+
+jobs:
+  # ------------------------------------------------------------------ #
+  # Lint — runs first for every trigger.  Deploy jobs depend on this.  #
+  # ------------------------------------------------------------------ #
+  lint:
+    name: Lint & vet
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: staticcheck
+        uses: dominikh/staticcheck-action@v1
+        with:
+          version: latest
+          install-go: false
+
+  # ------------------------------------------------------------------ #
+  # Deploy to staging — only on pushes to the staging branch.          #
+  # ------------------------------------------------------------------ #
+  deploy-staging:
+    name: Deploy → staging
+    needs: lint
+    if: github.ref_type == 'branch' && github.ref_name == 'staging'
+    runs-on: ubuntu-latest
+    environment: staging
+
+    permissions:
+      contents: read
+      id-token: write   # required for Workload Identity Federation
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account:            ${{ vars.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Resolve image tag
+        id: params
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${SHORT_SHA}"
+          CONNECTOR="projects/${{ vars.GCP_PROJECT_ID }}/locations/${{ env.REGION }}/connectors/golive-connector"
+          echo "image=$IMAGE"         >> $GITHUB_OUTPUT
+          echo "connector=$CONNECTOR" >> $GITHUB_OUTPUT
+
+      - name: Build Docker image
+        run: docker build --platform linux/amd64 -t ${{ steps.params.outputs.image }} .
+
+      - name: Push Docker image
+        run: docker push ${{ steps.params.outputs.image }}
+
+      - name: Deploy to Cloud Run (staging)
+        run: |
+          gcloud run deploy golive-staging \
+            --image=${{ steps.params.outputs.image }} \
+            --region=${{ env.REGION }} \
+            --project=${{ vars.GCP_PROJECT_ID }} \
+            --platform=managed \
+            --allow-unauthenticated \
+            --port=8080 \
+            --min-instances=1 \
+            --max-instances=1 \
+            --cpu=2 \
+            --memory=1Gi \
+            --concurrency=1000 \
+            --timeout=3600 \
+            --vpc-connector=${{ steps.params.outputs.connector }} \
+            --vpc-egress=private-ranges-only \
+            --session-affinity \
+            --set-env-vars="ENVIRONMENT=staging"
+
+      - name: Print staging URL
+        run: |
+          URL=$(gcloud run services describe golive-staging \
+            --region=${{ env.REGION }} \
+            --project=${{ vars.GCP_PROJECT_ID }} \
+            --format="value(status.url)")
+          echo "### 🟡 Staging deployed" >> $GITHUB_STEP_SUMMARY
+          echo "| | |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **URL** | $URL |" >> $GITHUB_STEP_SUMMARY
+          echo "| **WebSocket** | ${URL/https/wss}/ws |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image** | \`${{ steps.params.outputs.image }}\` |" >> $GITHUB_STEP_SUMMARY
+
+  # ------------------------------------------------------------------ #
+  # Deploy to prod — only on semver tag pushes (e.g. v1.2.3).          #
+  # The tag on main is the deployment gate — no extra approval needed.  #
+  # ------------------------------------------------------------------ #
+  deploy-prod:
+    name: Deploy → prod (${{ github.ref_name }})
+    needs: lint
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    environment: prod   # add Required reviewers here later if you want a human gate
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account:            ${{ vars.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Resolve image tag
+        id: params
+        run: |
+          # Tag the prod image with the semver version, not the git SHA.
+          VERSION="${{ github.ref_name }}"   # e.g. v1.2.3
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${VERSION}"
+          CONNECTOR="projects/${{ vars.GCP_PROJECT_ID }}/locations/${{ env.REGION }}/connectors/golive-connector"
+          echo "image=$IMAGE"         >> $GITHUB_OUTPUT
+          echo "connector=$CONNECTOR" >> $GITHUB_OUTPUT
+          echo "version=$VERSION"     >> $GITHUB_OUTPUT
+
+      - name: Build Docker image
+        run: docker build --platform linux/amd64 -t ${{ steps.params.outputs.image }} .
+
+      - name: Push Docker image
+        run: docker push ${{ steps.params.outputs.image }}
+
+      - name: Deploy to Cloud Run (prod)
+        run: |
+          gcloud run deploy golive \
+            --image=${{ steps.params.outputs.image }} \
+            --region=${{ env.REGION }} \
+            --project=${{ vars.GCP_PROJECT_ID }} \
+            --platform=managed \
+            --allow-unauthenticated \
+            --port=8080 \
+            --min-instances=1 \
+            --max-instances=1 \
+            --cpu=2 \
+            --memory=1Gi \
+            --concurrency=1000 \
+            --timeout=3600 \
+            --vpc-connector=${{ steps.params.outputs.connector }} \
+            --vpc-egress=private-ranges-only \
+            --session-affinity \
+            --set-env-vars="ENVIRONMENT=prod"
+
+      - name: Print prod URL
+        run: |
+          URL=$(gcloud run services describe golive \
+            --region=${{ env.REGION }} \
+            --project=${{ vars.GCP_PROJECT_ID }} \
+            --format="value(status.url)")
+          echo "### � Production deployed — ${{ steps.params.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "| | |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **URL** | $URL |" >> $GITHUB_STEP_SUMMARY
+          echo "| **WebSocket** | ${URL/https/wss}/ws |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image** | \`${{ steps.params.outputs.image }}\` |" >> $GITHUB_STEP_SUMMARY

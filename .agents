@@ -23,7 +23,7 @@ apply local predictive ticks for responsiveness.
 
 ## Architecture Notes
 - **Server tick rate**: ~250 ms (matches `LOCAL_TICK_MS` in `app.js`).
-- **Chunk size**: 64×64 cells. Clients subscribe to the chunks in their viewport.
+- **Chunk size**: 64x64 cells. Clients subscribe to the chunks in their viewport.
 - **Rate limiting**: Token bucket — 50 max tokens, 5 tokens/sec refill, 1 token
   per cell spawned. Tracked client-side for instant UI feedback and enforced
   server-side for correctness.

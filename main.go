@@ -74,7 +74,19 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to determine GCP project from metadata server: %v", err)
 		}
-		log.Printf("Running on GCP (project: %s) — reading secrets from Secret Manager", project)
+
+		// ENVIRONMENT is injected by the CI/CD pipeline (e.g. "staging" or "prod").
+		// Staging reads its own dedicated secrets so it never touches prod Redis.
+		environment := os.Getenv("ENVIRONMENT")
+		if environment == "" {
+			environment = "prod"
+		}
+		log.Printf("Running on GCP (project: %s, env: %s) — reading secrets from Secret Manager", project, environment)
+
+		secretSuffix := ""
+		if environment == "staging" {
+			secretSuffix = "_STAGING"
+		}
 
 		smClient, err := secretmanager.NewClient(ctx)
 		if err != nil {
@@ -82,14 +94,14 @@ func main() {
 		}
 		defer smClient.Close()
 
-		if addr, err := readSecret(ctx, smClient, project, "REDIS_ADDR"); err != nil {
-			log.Fatalf("Failed to read REDIS_ADDR from Secret Manager: %v", err)
+		if addr, err := readSecret(ctx, smClient, project, "REDIS_ADDR"+secretSuffix); err != nil {
+			log.Fatalf("Failed to read REDIS_ADDR%s from Secret Manager: %v", secretSuffix, err)
 		} else {
 			redisAddr = addr
 		}
 
-		if pw, err := readSecret(ctx, smClient, project, "REDIS_PASSWORD"); err != nil {
-			log.Fatalf("Failed to read REDIS_PASSWORD from Secret Manager: %v", err)
+		if pw, err := readSecret(ctx, smClient, project, "REDIS_PASSWORD"+secretSuffix); err != nil {
+			log.Fatalf("Failed to read REDIS_PASSWORD%s from Secret Manager: %v", secretSuffix, err)
 		} else {
 			redisPassword = pw
 		}
