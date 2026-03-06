@@ -7,7 +7,8 @@
 
 ## Phase 2: State Storage & Synchronization
 - [x] **Task 2.1: Redis Storage Engine.** Implement save/load for chunk state using Redis (hot state).
-- [ ] **Task 2.2: Tick Manager.** Implement a deterministic lockstep clock to trigger chunk ticks and broadcast halo edge updates.
+- [x] **Task 2.2: Tick Manager.** Implement a deterministic lockstep clock to trigger chunk ticks and broadcast halo edge updates.
+- [ ] **Task 2.3: Chunk Actor Registry.** Manage active chunk goroutines in memory and route ticks/events to them.
 
 ## Phase 3: Network & API (The Gateway)
 - [ ] **Task 3.1: WebSocket Server.** Scaffold a generic WebSocket handler for client connections.
