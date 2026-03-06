@@ -72,6 +72,34 @@
             letter-spacing: 0.5px;
         }
 
+        /* Rate limit budget bar */
+        #rl-wrap {
+            margin-top: 7px;
+        }
+
+        #rl-label {
+            font-size: 9px;
+            color: rgba(255, 255, 255, 0.3);
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 3px;
+        }
+
+        #rl-track {
+            height: 4px;
+            border-radius: 2px;
+            background: rgba(255, 255, 255, 0.07);
+            overflow: hidden;
+        }
+
+        #rl-fill {
+            height: 100%;
+            border-radius: 2px;
+            width: 100%;
+            transition: width 0.2s linear, background-color 0.4s ease;
+            background: #00ff88;
+        }
+
         /* ── Shape Picker Panel ──────────────────────────────────────── */
         #shape-panel {
             position: absolute;
@@ -318,6 +346,15 @@
         <p>Status: <span id="status">Connecting…</span></p>
         <p id="pos"></p>
         <p id="mode-badge">✦ CELL MODE</p>
+        <div id="rl-wrap">
+            <div id="rl-label">
+                <span>Tokens</span>
+                <span id="rl-count">50 / 50</span>
+            </div>
+            <div id="rl-track">
+                <div id="rl-fill"></div>
+            </div>
+        </div>
         <p id="help">Click to spawn · Drag to pan · Scroll to zoom</p>
     </div>
 

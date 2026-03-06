@@ -71,6 +71,48 @@ let subscribedChunks = new Set(); // "cx,cy" strings
 // ERROR → shift() and delete those keys from localCells (rollback).
 const pendingCommands = [];
 
+// ─── Rate Limit Budget Tracker ───────────────────────────────────────────────
+// Mirrors server config: player bucket = 50 max, 5 tokens/sec refill.
+// Tracked client-side so the bar is instant with no extra server round-trips.
+const RL_MAX = 50;
+const RL_REFILL = 5;   // tokens per second
+let rlTokens = RL_MAX;
+let rlLastMs = Date.now();
+
+const rlFill = document.getElementById('rl-fill');
+const rlCount = document.getElementById('rl-count');
+
+function rlRefill() {
+    const now = Date.now();
+    const elapsed = (now - rlLastMs) / 1000;
+    const added = elapsed * RL_REFILL;   // fractional tokens
+    if (added >= 0.01) {
+        rlTokens = Math.min(RL_MAX, rlTokens + added);
+        rlLastMs = now;
+    }
+}
+
+function rlConsume(n) {
+    rlRefill();
+    rlTokens = Math.max(0, rlTokens - n);
+    rlDraw();
+}
+
+function rlDraw() {
+    const pct = rlTokens / RL_MAX;
+    // Green (full) → Yellow (half) → Red (empty)
+    const hue = Math.round(pct * 120);   // 120=green, 60=yellow, 0=red
+    const color = `hsl(${hue}, 90%, 55%)`;
+    if (rlFill) {
+        rlFill.style.width = `${Math.round(pct * 100)}%`;
+        rlFill.style.backgroundColor = color;
+    }
+    if (rlCount) rlCount.textContent = `${Math.floor(rlTokens)} / ${RL_MAX}`;
+}
+
+// Animate refill smoothly at ~200ms intervals.
+setInterval(() => { rlRefill(); rlDraw(); }, 200);
+
 // ─── Toast Notification ───────────────────────────────────────────────────────
 function showToast(msg, color = '#ff4455') {
     const t = document.createElement('div');
@@ -122,6 +164,8 @@ ws.onmessage = ({ data }) => {
                 for (const key of pending) localCells.delete(key);
             }
             if (msg.payload.code === 'RATE_LIMITED') {
+                // Server confirmed we're empty — snap tokens to 0.
+                rlTokens = 0; rlDraw();
                 showToast('⚡ Rate limited — slow down!');
             } else {
                 console.warn('Server error:', msg.payload.code, msg.payload.message);
@@ -362,8 +406,6 @@ setInterval(localTick, LOCAL_TICK_MS);
 // ─── Place action (shared by mouse click & touch tap) ────────────────────────
 function placeAt(screenX, screenY) {
     const { wx, wy } = screenToWorld(screenX, screenY);
-    // Build the set of keys being added optimistically so we can roll back
-    // if the server rejects the command (e.g. rate limited).
     const optimistic = [];
 
     if (selectedShape && catalog[selectedShape]) {
@@ -372,6 +414,7 @@ function placeAt(screenX, screenY) {
             localCells.add(key);
             optimistic.push(key);
         }
+        rlConsume(optimistic.length); // charge tokens before sending
         pendingCommands.push(optimistic);
         if (ws.readyState === WebSocket.OPEN)
             ws.send(JSON.stringify({ type: 'PLACE_SHAPE', payload: { x: wx, y: wy, shape: selectedShape } }));
@@ -379,6 +422,7 @@ function placeAt(screenX, screenY) {
         const key = `${wx},${wy}`;
         localCells.add(key);
         optimistic.push(key);
+        rlConsume(1);
         pendingCommands.push(optimistic);
         if (ws.readyState === WebSocket.OPEN)
             ws.send(JSON.stringify({ type: 'SPAWN', payload: { x: wx, y: wy } }));
