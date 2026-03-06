@@ -1,39 +1,269 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Distributed Game of Life</title>
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { overflow: hidden; background: #080810; color: #fff; font-family: 'Courier New', monospace; }
-        canvas { display: block; cursor: crosshair; }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            overflow: hidden;
+            background: #080810;
+            color: #fff;
+            font-family: 'Courier New', monospace;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        /* ── HUD ─────────────────────────────────────────────────────── */
         #hud {
             position: absolute;
-            top: 12px; left: 12px;
+            top: 12px;
+            left: 12px;
             background: rgba(0, 0, 0, 0.65);
             backdrop-filter: blur(6px);
             padding: 10px 14px;
             border-radius: 8px;
-            border: 1px solid rgba(255,255,255,0.08);
+            border: 1px solid rgba(255, 255, 255, 0.08);
             pointer-events: none;
             font-size: 12px;
             line-height: 1.7;
         }
-        #hud h3 { font-size: 13px; color: #00ff88; margin-bottom: 4px; letter-spacing: 1px; }
-        #status { font-weight: bold; }
-        #pos    { color: rgba(255,255,255,0.5); font-size: 11px; }
-        #help   { color: rgba(255,255,255,0.35); font-size: 10px; margin-top: 6px; }
+
+        #hud h3 {
+            font-size: 13px;
+            color: #00ff88;
+            margin-bottom: 4px;
+            letter-spacing: 1px;
+        }
+
+        #status {
+            font-weight: bold;
+        }
+
+        #pos {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 11px;
+        }
+
+        #help {
+            color: rgba(255, 255, 255, 0.35);
+            font-size: 10px;
+            margin-top: 6px;
+        }
+
+        #mode-badge {
+            display: inline-block;
+            margin-top: 5px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: rgba(0, 255, 136, 0.15);
+            border: 1px solid rgba(0, 255, 136, 0.3);
+            color: #00ff88;
+            font-size: 10px;
+            letter-spacing: 0.5px;
+        }
+
+        /* ── Shape Picker Panel ──────────────────────────────────────── */
+        #shape-panel {
+            position: absolute;
+            right: 12px;
+            top: 12px;
+            bottom: 12px;
+            width: 220px;
+            background: rgba(8, 8, 20, 0.85);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            font-size: 12px;
+        }
+
+        #shape-panel-header {
+            padding: 10px 12px 8px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+            flex-shrink: 0;
+        }
+
+        #shape-panel-header h4 {
+            font-size: 11px;
+            color: #00ff88;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        /* Category tabs */
+        #category-tabs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+
+        .cat-tab {
+            padding: 3px 8px;
+            border-radius: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            background: transparent;
+            color: rgba(255, 255, 255, 0.45);
+            font-size: 10px;
+            cursor: pointer;
+            font-family: inherit;
+            transition: all 0.15s ease;
+        }
+
+        .cat-tab:hover {
+            border-color: rgba(0, 255, 136, 0.35);
+            color: rgba(255, 255, 255, 0.8);
+        }
+
+        .cat-tab.active {
+            background: rgba(0, 255, 136, 0.15);
+            border-color: rgba(0, 255, 136, 0.5);
+            color: #00ff88;
+        }
+
+        /* Shape list */
+        #shape-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(0, 255, 136, 0.2) transparent;
+        }
+
+        #shape-list::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        #shape-list::-webkit-scrollbar-thumb {
+            background: rgba(0, 255, 136, 0.2);
+            border-radius: 2px;
+        }
+
+        #shape-list::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .shape-btn {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 7px 8px;
+            border-radius: 7px;
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            background: rgba(255, 255, 255, 0.03);
+            cursor: pointer;
+            transition: all 0.15s ease;
+            text-align: left;
+            color: rgba(255, 255, 255, 0.75);
+            font-family: inherit;
+            font-size: 11px;
+        }
+
+        .shape-btn:hover {
+            background: rgba(0, 255, 136, 0.08);
+            border-color: rgba(0, 255, 136, 0.25);
+            color: #fff;
+        }
+
+        .shape-btn.selected {
+            background: rgba(0, 255, 136, 0.15);
+            border-color: rgba(0, 255, 136, 0.55);
+            color: #00ff88;
+            box-shadow: 0 0 10px rgba(0, 255, 136, 0.1);
+        }
+
+        .shape-preview {
+            flex-shrink: 0;
+            width: 40px;
+            height: 40px;
+            border-radius: 4px;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            image-rendering: pixelated;
+        }
+
+        .shape-label {
+            line-height: 1.3;
+        }
+
+        .shape-label small {
+            display: block;
+            color: rgba(255, 255, 255, 0.3);
+            font-size: 9px;
+            margin-top: 1px;
+        }
+
+        /* Escape hint at bottom */
+        #shape-panel-footer {
+            padding: 8px 12px;
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+            color: rgba(255, 255, 255, 0.25);
+            font-size: 9px;
+            flex-shrink: 0;
+        }
+
+        #clear-btn {
+            display: block;
+            width: 100%;
+            margin-bottom: 6px;
+            padding: 5px;
+            border-radius: 5px;
+            border: 1px solid rgba(255, 80, 80, 0.25);
+            background: rgba(255, 80, 80, 0.08);
+            color: rgba(255, 100, 100, 0.7);
+            font-family: inherit;
+            font-size: 10px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        #clear-btn:hover {
+            background: rgba(255, 80, 80, 0.18);
+            border-color: rgba(255, 80, 80, 0.5);
+            color: #ff6666;
+        }
     </style>
 </head>
+
 <body>
     <div id="hud">
         <h3>GAME OF LIFE</h3>
         <p>Status: <span id="status">Connecting…</span></p>
         <p id="pos"></p>
+        <p id="mode-badge">✦ CELL MODE</p>
         <p id="help">Click to spawn · Drag to pan</p>
     </div>
-    <canvas id="grid"></canvas>
+
+    <!-- Shape Picker -->
+    <div id="shape-panel">
+        <div id="shape-panel-header">
+            <h4>📐 Shape Library</h4>
+            <div id="category-tabs"><!-- populated by JS --></div>
+        </div>
+        <div id="shape-list"><!-- populated by JS --></div>
+        <div id="shape-panel-footer">
+            <button id="clear-btn">✕ Deselect shape [Esc]</button>
+            Click a shape then click the grid to place it.
+        </div>
+    </div>
+
+    <canvas id="grid" style="cursor: crosshair;"></canvas>
     <script src="app.js"></script>
 </body>
+
 </html>

@@ -107,6 +107,7 @@ func main() {
 
 	http.Handle("/ws", gateway.HandleWebSocket(router, pubsub))
 	http.Handle("/metrics", promhttp.Handler())
+	http.Handle("/catalog", gateway.HandleCatalog())
 	http.Handle("/", http.FileServer(http.Dir("./viewport")))
 
 	port := os.Getenv("PORT")

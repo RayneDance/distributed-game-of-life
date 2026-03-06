@@ -1,24 +1,31 @@
 package gateway
 
-// IncomingMessage represents a raw WebSocket message from a client.
+// IncomingMessage is the envelope for all client-to-server messages.
 type IncomingMessage struct {
 	Type    string      `json:"type"`
 	Payload interface{} `json:"payload"`
 }
 
-// SpawnCommand requests that a cell be toggled at absolute world coordinates.
+// SpawnCommand spawns a single cell at absolute world coordinates.
 type SpawnCommand struct {
 	X int64 `json:"x"`
 	Y int64 `json:"y"`
 }
 
-// SubscribeCommand requests a diff of viewport subscriptions.
-// Chunks lists the chunk coordinates to add or remove.
+// PlaceShapeCommand places a named pattern rooted at (X, Y).
+// The server looks up the shape — clients cannot supply arbitrary offsets.
+type PlaceShapeCommand struct {
+	X     int64  `json:"x"`
+	Y     int64  `json:"y"`
+	Shape string `json:"shape"`
+}
+
+// SubscribeCommand lists chunks to add or remove from a client's viewport subscription.
 type SubscribeCommand struct {
 	Chunks []ChunkRef `json:"chunks"`
 }
 
-// ChunkRef is a lightweight coordinate pair used in subscribe/unsubscribe payloads.
+// ChunkRef is a coordinate pair used in subscribe/unsubscribe payloads.
 type ChunkRef struct {
 	X int64 `json:"x"`
 	Y int64 `json:"y"`
@@ -30,7 +37,7 @@ type OutgoingMessage struct {
 	Payload interface{} `json:"payload"`
 }
 
-// ErrorPayload standardizes error reporting to the client.
+// ErrorPayload standardizes error responses to the client.
 type ErrorPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
