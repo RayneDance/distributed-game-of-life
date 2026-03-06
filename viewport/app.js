@@ -37,7 +37,8 @@ setPanelCollapsed(window.innerWidth <= 600);
 
 
 // ─── State ───────────────────────────────────────────────────────────────────
-let localCells = new Set(); // "x,y" strings
+// localCells maps "x,y" key → CSS color string (hsl(...))
+let localCells = new Map();
 
 // Camera: world-pixel offset of the canvas top-left corner (at zoom 1×).
 let camX = 0;
@@ -367,26 +368,92 @@ function reconcileChunk({ x, y, cells }) {
     const maxX = baseX + CHUNK_SIZE;
     const maxY = baseY + CHUNK_SIZE;
 
-    for (const key of localCells) {
+    // Collect keys inside this chunk that were already live (keep their colors).
+    const existing = new Map();
+    for (const [key, color] of localCells) {
         const i = key.indexOf(',');
         const wx = +key.slice(0, i);
         const wy = +key.slice(i + 1);
-        if (wx >= baseX && wx < maxX && wy >= baseY && wy < maxY)
+        if (wx >= baseX && wx < maxX && wy >= baseY && wy < maxY) {
+            existing.set(key, color);
             localCells.delete(key);
+        }
     }
+
+    // Re-add server cells: reuse existing color if the cell was already live,
+    // otherwise assign a new random pastel (server-originated, so no neighbors known).
     for (const offset of (cells || [])) {
         const lx = offset % CHUNK_SIZE;
         const ly = Math.floor(offset / CHUNK_SIZE);
-        localCells.add(`${baseX + lx},${baseY + ly}`);
+        const key = `${baseX + lx},${baseY + ly}`;
+        localCells.set(key, existing.get(key) ?? randomPastelColor());
     }
+}
+
+// ─── Color Helpers ───────────────────────────────────────────────────────────
+
+/** Generate a random vivid-pastel color in HSL. */
+function randomPastelColor() {
+    const h = Math.floor(Math.random() * 360);
+    const s = Math.floor(Math.random() * 30) + 60;   // 60–90%
+    const l = Math.floor(Math.random() * 20) + 60;   // 60–80%
+    return `hsl(${h},${s}%,${l}%)`;
+}
+
+/**
+ * Parse an `hsl(H,S%,L%)` string into [h, s, l] numbers.
+ * Returns null if the string can't be parsed.
+ */
+function parseHSL(str) {
+    const m = str.match(/hsl\((\d+(?:\.\d+)?),(\d+(?:\.\d+)?)%,(\d+(?:\.\d+)?)%\)/);
+    return m ? [parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3])] : null;
+}
+
+/**
+ * Average an array of HSL triples [[h,s,l], ...].
+ * Hue is averaged circularly to avoid the 0°/360° wrap artefact.
+ */
+function averageHSL(hslList) {
+    if (hslList.length === 0) return randomPastelColor();
+
+    let sinSum = 0, cosSum = 0, sSum = 0, lSum = 0;
+    for (const [h, s, l] of hslList) {
+        const rad = (h * Math.PI) / 180;
+        sinSum += Math.sin(rad);
+        cosSum += Math.cos(rad);
+        sSum += s;
+        lSum += l;
+    }
+    const n = hslList.length;
+    const hAvg = ((Math.atan2(sinSum / n, cosSum / n) * 180) / Math.PI + 360) % 360;
+    const sAvg = sSum / n;
+    const lAvg = lSum / n;
+    return `hsl(${Math.round(hAvg)},${Math.round(sAvg)}%,${Math.round(lAvg)}%)`;
+}
+
+/**
+ * Given a cell key "x,y", collect the HSL values of all live neighbors
+ * and return their average.  Falls back to a random pastel if none are live.
+ */
+function neighborAverageColor(x, y) {
+    const hslList = [];
+    for (const [dx, dy] of DIRS) {
+        const color = localCells.get(`${x + dx},${y + dy}`);
+        if (color) {
+            const hsl = parseHSL(color);
+            if (hsl) hslList.push(hsl);
+        }
+    }
+    return averageHSL(hslList);
 }
 
 // ─── Local Prediction ────────────────────────────────────────────────────────
 const DIRS = [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]];
 
 function localTick() {
-    const counts = new Map();
-    for (const key of localCells) {
+    // Count live neighbors for each candidate cell.
+    const counts = new Map();  // key → neighbor count
+    for (const key of localCells.keys()) {
         const i = key.indexOf(',');
         const x = +key.slice(0, i), y = +key.slice(i + 1);
         for (const [dx, dy] of DIRS) {
@@ -394,10 +461,23 @@ function localTick() {
             counts.set(nk, (counts.get(nk) || 0) + 1);
         }
     }
-    const next = new Set();
-    for (const [key, count] of counts)
-        if (count === 3 || (count === 2 && localCells.has(key)))
-            next.add(key);
+
+    const next = new Map();
+    for (const [key, count] of counts) {
+        const survives = count === 3 || (count === 2 && localCells.has(key));
+        if (!survives) continue;
+
+        if (localCells.has(key)) {
+            // Surviving cell — keep its color.
+            next.set(key, localCells.get(key));
+        } else {
+            // Newly born from neighbors — blend their colors.
+            const i = key.indexOf(',');
+            const x = +key.slice(0, i), y = +key.slice(i + 1);
+            next.set(key, neighborAverageColor(x, y));
+        }
+    }
+
     localCells = next;
 }
 
@@ -409,9 +489,11 @@ function placeAt(screenX, screenY) {
     const optimistic = [];
 
     if (selectedShape && catalog[selectedShape]) {
+        // Pick one pastel color for the whole shape.
+        const shapeColor = randomPastelColor();
         for (const c of catalog[selectedShape].cells) {
             const key = `${wx + c.x},${wy + c.y}`;
-            localCells.add(key);
+            localCells.set(key, shapeColor);
             optimistic.push(key);
         }
         rlConsume(optimistic.length); // charge tokens before sending
@@ -420,7 +502,7 @@ function placeAt(screenX, screenY) {
             ws.send(JSON.stringify({ type: 'PLACE_SHAPE', payload: { x: wx, y: wy, shape: selectedShape } }));
     } else {
         const key = `${wx},${wy}`;
-        localCells.add(key);
+        localCells.set(key, randomPastelColor());
         optimistic.push(key);
         rlConsume(1);
         pendingCommands.push(optimistic);
@@ -617,18 +699,19 @@ function draw() {
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
     }
 
-    // Living cells.
+    // Living cells — each drawn with its individual color.
     const cs = Math.max(1, cp - 1); // cell draw size with 1px gap (clamp at 1)
-    ctx.fillStyle = '#00ff88';
-    for (const key of localCells) {
+    for (const [key, color] of localCells) {
         const i = key.indexOf(',');
         const wx = +key.slice(0, i);
         const wy = +key.slice(i + 1);
         const sx = wx * cp - camX;
         const sy = wy * cp - camY;
         if (sx > -cp && sx < canvas.width + cp &&
-            sy > -cp && sy < canvas.height + cp)
+            sy > -cp && sy < canvas.height + cp) {
+            ctx.fillStyle = color;
             ctx.fillRect(sx, sy, cs, cs);
+        }
     }
 
     // Ghost preview.

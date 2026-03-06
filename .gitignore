@@ -1,0 +1,50 @@
+# ─── Binaries ────────────────────────────────────────────────────────────────
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/distributed-game-of-life
+/server
+
+# ─── Go toolchain ────────────────────────────────────────────────────────────
+# Test binary, built with `go test -c`
+*.test
+# Output of `go build`
+/bin/
+/dist/
+# Go workspace file (local only)
+go.work
+go.work.sum
+
+# ─── Environment / secrets ───────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+service-account*.json
+*-credentials.json
+
+# ─── Cloud / deployment ──────────────────────────────────────────────────────
+# GCP SDK
+.gcloud/
+# Terraform state (if ever added)
+*.tfstate
+*.tfstate.backup
+.terraform/
+
+# ─── Editor / OS ─────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Logs / tmp ──────────────────────────────────────────────────────────────
+*.log
+tmp/

@@ -1,0 +1,53 @@
+# Distributed Game of Life — Agent Context
+
+## Project Overview
+A distributed, real-time Game of Life played in a browser viewport. Players can
+place individual cells or pre-defined shapes on a shared infinite grid. The
+simulation runs server-side; clients receive chunk updates via WebSocket and
+apply local predictive ticks for responsiveness.
+
+## Repository Layout
+```
+/                   Go module root
+├── main.go         HTTP server entry-point (WebSocket upgrade, static serving)
+├── gateway/        HTTP handlers, shape catalog, rate-limiting middleware
+├── simulation/     Conway tick engine, chunk management
+├── ratelimit/      Token-bucket rate limiter (per-player)
+├── storage/        Redis persistence layer
+├── metrics/        Prometheus metrics
+└── viewport/       Browser frontend (vanilla JS + CSS)
+    ├── index.html
+    ├── app.js      Main client logic (camera, WebSocket, render loop)
+    └── style.css
+```
+
+## Architecture Notes
+- **Server tick rate**: ~250 ms (matches `LOCAL_TICK_MS` in `app.js`).
+- **Chunk size**: 64×64 cells. Clients subscribe to the chunks in their viewport.
+- **Rate limiting**: Token bucket — 50 max tokens, 5 tokens/sec refill, 1 token
+  per cell spawned. Tracked client-side for instant UI feedback and enforced
+  server-side for correctness.
+- **WebSocket message types**:
+  - Client → Server: `SUBSCRIBE`, `UNSUBSCRIBE`, `SPAWN`, `PLACE_SHAPE`
+  - Server → Client: `CHUNK_STATE`, `SPAWN_ACK`, `PLACE_SHAPE_ACK`, `ERROR`
+
+## Frontend Conventions
+- `localCells` is a `Map<"x,y", hslColorString>` — **not** a plain Set.
+  Every cell carries its own pastel HSL color.
+- Cells born via Game-of-Life rules inherit a circular average of their
+  neighbors' colors; user-placed cells get a fresh random pastel.
+- No external JS frameworks or bundlers — plain ES2020 in a single `app.js`.
+
+## Key Config Constants (app.js)
+| Constant | Value | Meaning |
+|---|---|---|
+| `BASE_CELL_SIZE` | 8 px | Pixel size of one cell at zoom 1× |
+| `CHUNK_SIZE` | 64 | Cells per chunk edge |
+| `LOCAL_TICK_MS` | 250 ms | Local prediction interval |
+| `VIEWPORT_PAD` | 1 | Extra chunks subscribed beyond visible edge |
+| `RL_MAX` / `RL_REFILL` | 50 / 5 | Rate-limit token bucket |
+
+## Deployment
+- Cloud Run (single container). See `deploy.ps1` and `DEPLOYMENT.md`.
+- Redis (Memorystore) for cell persistence.
+- Secrets managed via Cloud Secret Manager.
