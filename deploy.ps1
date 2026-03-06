@@ -29,8 +29,8 @@
     ./deploy.ps1
 #>
 param(
-    [string]$ProjectId   = (gcloud config get-value project 2>$null),
-    [string]$Region      = "us-central1",
+    [string]$ProjectId = (gcloud config get-value project 2>$null),
+    [string]$Region = "us-central1",
     [string]$ServiceName = "golive",
     [switch]$Init
 )
@@ -39,12 +39,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 # ── Derived names ─────────────────────────────────────────────────────────────
-$RepoName      = "golive-repo"
-$ImageBase     = "$Region-docker.pkg.dev/$ProjectId/$RepoName/$ServiceName"
-$ImageTag      = "${ImageBase}:$(git rev-parse --short HEAD)"
-$RedisName     = "golive-redis"
+$RepoName = "golive-repo"
+$ImageBase = "$Region-docker.pkg.dev/$ProjectId/$RepoName/$ServiceName"
+$ImageTag = "${ImageBase}:$(git rev-parse --short HEAD)"
+$RedisName = "golive-redis"
 $ConnectorName = "golive-connector"
-$Network       = "default"
+$Network = "default"
 
 if (-not $ProjectId) {
     Write-Error "Could not detect GCP project. Pass -ProjectId or run: gcloud config set project YOUR_PROJECT"
@@ -143,8 +143,10 @@ $ServiceUrl = gcloud run services describe $ServiceName `
     --project=$ProjectId `
     --format="value(status.url)"
 
+$WssUrl = $ServiceUrl -replace 'https', 'wss'
+
 Write-Host ""
 Write-Host "✅ Deploy complete!" -ForegroundColor Green
-Write-Host "   URL      : $ServiceUrl"         -ForegroundColor White
-Write-Host "   WebSocket: $($ServiceUrl -replace 'https','wss')/ws" -ForegroundColor White
+Write-Host "   URL      : $ServiceUrl" -ForegroundColor White
+Write-Host "   WebSocket: $WssUrl/ws"  -ForegroundColor White
 Write-Host "   Metrics  : Internal only — scrape via Cloud Monitoring" -ForegroundColor DarkGray
