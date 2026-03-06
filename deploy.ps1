@@ -117,9 +117,12 @@ if ($Init) {
     Write-Host "  REDIS_ADDR     - e.g. 10.0.0.3:6379 or your-redis-host:6379" -ForegroundColor White
     Write-Host "  REDIS_PASSWORD - the AUTH password for your Redis instance" -ForegroundColor White
     Write-Host ""
-    Write-Host "Create them like this:" -ForegroundColor Yellow
-    Write-Host "  echo -n 'host:port' | gcloud secrets create REDIS_ADDR --data-file=- --project $ProjectId" -ForegroundColor White
-    Write-Host "  echo -n 'password'  | gcloud secrets create REDIS_PASSWORD --data-file=- --project $ProjectId" -ForegroundColor White
+    Write-Host "Create them like this (PowerShell - no trailing newline):" -ForegroundColor Yellow
+    Write-Host '  [IO.File]::WriteAllBytes("addr.tmp", [Text.Encoding]::UTF8.GetBytes("host:port"))' -ForegroundColor White
+    Write-Host "  gcloud secrets create REDIS_ADDR --data-file=addr.tmp --project $ProjectId" -ForegroundColor White
+    Write-Host '  [IO.File]::WriteAllBytes("pw.tmp",   [Text.Encoding]::UTF8.GetBytes("yourpassword"))' -ForegroundColor White
+    Write-Host "  gcloud secrets create REDIS_PASSWORD --data-file=pw.tmp --project $ProjectId" -ForegroundColor White
+    Write-Host "  Remove-Item addr.tmp, pw.tmp" -ForegroundColor White
     Write-Host ""
     Write-Host "Then run ./deploy.ps1 to deploy." -ForegroundColor Green
     exit 0

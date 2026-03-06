@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/compute/metadata"
@@ -29,7 +30,7 @@ func readSecret(ctx context.Context, client *secretmanager.Client, project, name
 	if err != nil {
 		return "", fmt.Errorf("secret %q: %w", name, err)
 	}
-	return string(result.Payload.Data), nil
+	return strings.TrimSpace(string(result.Payload.Data)), nil
 }
 
 func main() {
