@@ -3,86 +3,142 @@ package simulation
 import (
 	"context"
 	"log"
+	"runtime"
 	"sync"
 	"time"
 
 	"github.com/RayneDance/distributed-game-of-life/metrics"
 )
 
-// hibernationThreshold is the number of idle ticks before an empty, unsubscribed
-// chunk actor serializes its state and shuts down its goroutine.
+// hibernationThreshold is the number of consecutive idle ticks before an
+// empty, unsubscribed chunk is persisted and removed from memory.
 const hibernationThreshold = 100
 
-// RegistryConfig holds dependency-injected callbacks to avoid circular imports
-// between the simulation, storage, and gateway packages.
+// RegistryConfig holds dependency-injected callbacks.
 type RegistryConfig struct {
 	// OnTick is called after every chunk tick with the new cell snapshot.
-	// Implemented by gateway.PubSub.Broadcast.
 	OnTick func(id ChunkID, cells []uint16)
 
 	// Persist saves a chunk to durable storage before hibernation.
-	// Implemented as a closure over storage.RedisEngine in main.go.
 	Persist func(chunk *Chunk) error
 
 	// Load hydrates a chunk from durable storage.
-	// Called inside GetOrCreate before the actor is started, so a chunk
-	// that was previously hibernated resumes from its persisted state.
 	Load func(id ChunkID) (*Chunk, error)
 
 	// HasSubscribers reports whether any client is viewing the chunk.
-	// Used to block hibernation of visible-but-empty chunks.
 	HasSubscribers func(id ChunkID) bool
 
 	// Metrics provides Prometheus instrumentation. May be nil.
 	Metrics *metrics.Metrics
 }
 
-// Registry manages active chunk actors.
+// chunkState is the registry's bookkeeping for one active chunk.
+type chunkState struct {
+	chunk     *Chunk
+	idleTicks int
+}
+
+// chunkHandle is the thin public wrapper returned by GetOrCreate.
+// It implements ChunkActor so the gateway can spawn cells without knowing
+// anything about the registry's internal tick machinery.
+type chunkHandle struct {
+	chunk *Chunk
+}
+
+func (h *chunkHandle) ProcessSpawn(_ context.Context, x, y uint8) error {
+	h.chunk.AddCell(x, y)
+	return nil
+}
+
+// tickJob is the unit of work sent to a worker goroutine each tick.
+type tickJob struct {
+	state     *chunkState
+	chunkRows [ChunkSize]uint64 // pre-snapshotted — safe to read without lock
+	halos     map[ChunkID][ChunkSize]uint64
+	wg        *sync.WaitGroup
+}
+
+// Registry manages active chunks and drives the simulation via a worker pool.
 type Registry struct {
 	mu     sync.RWMutex
 	cfg    RegistryConfig
-	chunks map[ChunkID]*chunkActorImpl
+	chunks map[ChunkID]*chunkState
+
+	jobCh chan tickJob // unbuffered — workers block until TickAll sends
 }
 
-// NewRegistry creates a new chunk actor registry with the given config.
+// NewRegistry creates a Registry and starts its worker pool.
+// Workers == runtime.NumCPU(), giving genuine parallelism without
+// over-subscribing the scheduler on low-vCPU environments like Cloud Run.
 func NewRegistry(cfg RegistryConfig) *Registry {
-	return &Registry{
+	r := &Registry{
 		cfg:    cfg,
-		chunks: make(map[ChunkID]*chunkActorImpl),
+		chunks: make(map[ChunkID]*chunkState),
+		jobCh:  make(chan tickJob, runtime.NumCPU()*2),
+	}
+	n := runtime.NumCPU()
+	if n < 1 {
+		n = 1
+	}
+	for i := 0; i < n; i++ {
+		go r.runWorker()
+	}
+	return r
+}
+
+// runWorker is the body of each pooled worker goroutine.
+// Each worker owns its own TickScratch, eliminating per-tick allocations.
+func (r *Registry) runWorker() {
+	var scratch TickScratch
+	for job := range r.jobCh {
+		r.processJob(job, &scratch)
 	}
 }
 
-// chunkActorImpl wraps a Chunk as an independent actor goroutine.
-type chunkActorImpl struct {
-	chunk     *Chunk
-	spawnChan chan spawnReq
-	haloChan  chan haloReq
-	// tickChan carries a *sync.WaitGroup so TickAll can block until the actor
-	// signals wg.Done() after completing its tick computation. This is the
-	// lockstep barrier: no actor receives generation N+1 halos until all actors
-	// have finished computing generation N.
-	tickChan chan *sync.WaitGroup
-	registry *Registry
+// processJob computes one tick for one chunk and handles post-tick bookkeeping.
+func (r *Registry) processJob(job tickJob, scratch *TickScratch) {
+	defer job.wg.Done()
+
+	chunk := job.state.chunk
+	start := time.Now()
+
+	// Compute next generation using the pre-snapshotted rows and halos.
+	nextRows := TickBitset(chunk.ID, job.chunkRows, job.halos, scratch)
+	chunk.SetRows(nextRows)
+
+	// Metrics.
+	if m := r.cfg.Metrics; m != nil {
+		m.TickDuration.Observe(float64(time.Since(start).Nanoseconds()) / 1e6)
+	}
+
+	// Broadcast to subscribed viewport clients.
+	if fn := r.cfg.OnTick; fn != nil {
+		fn(chunk.ID, chunk.Snapshot())
+	}
+
+	// Hibernation: an empty, unwatched chunk with no pending work hibernates
+	// after hibernationThreshold consecutive idle ticks.
+	empty := chunk.PopCount() == 0
+	hasSubs := r.cfg.HasSubscribers != nil && r.cfg.HasSubscribers(chunk.ID)
+
+	if empty && !hasSubs {
+		job.state.idleTicks++
+		if job.state.idleTicks >= hibernationThreshold {
+			r.hibernate(chunk)
+		}
+	} else {
+		job.state.idleTicks = 0
+	}
 }
 
-type spawnReq struct{ x, y uint8 }
-type haloReq struct {
-	neighborID ChunkID
-	haloData   []uint16
-}
-
-// GetOrCreate returns an existing actor or lazily instantiates a new one.
-// If a Load callback is configured and the chunk has persisted state, the actor
-// is hydrated from storage before its goroutine starts.
-//
-// Load (Redis I/O) is called with NO locks held to avoid blocking the entire
-// registry during a network round-trip.
+// GetOrCreate returns a ChunkActor for id, creating and optionally hydrating
+// it from storage if it does not already exist.
 func (r *Registry) GetOrCreate(id ChunkID) ChunkActor {
 	r.mu.RLock()
-	actor, exists := r.chunks[id]
+	state, exists := r.chunks[id]
 	r.mu.RUnlock()
 	if exists {
-		return actor
+		return &chunkHandle{chunk: state.chunk}
 	}
 
 	// Load from storage without holding any lock.
@@ -97,42 +153,30 @@ func (r *Registry) GetOrCreate(id ChunkID) ChunkActor {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// Another goroutine may have created the actor while we were loading.
-	if actor, exists = r.chunks[id]; exists {
-		return actor
+	// Re-check: another goroutine may have created it while we were loading.
+	if state, exists = r.chunks[id]; exists {
+		return &chunkHandle{chunk: state.chunk}
 	}
 
-	actor = &chunkActorImpl{
-		chunk:     chunk,
-		spawnChan: make(chan spawnReq, 100),
-		haloChan:  make(chan haloReq, 16), // 16: one round × 8 neighbours (barrier ensures no overlap)
-		tickChan:  make(chan *sync.WaitGroup, 1),
-		registry:  r,
-	}
-	r.chunks[id] = actor
+	state = &chunkState{chunk: chunk}
+	r.chunks[id] = state
 
 	if r.cfg.Metrics != nil {
 		r.cfg.Metrics.ActiveChunkActors.Inc()
 	}
 
-	go actor.run()
-	return actor
+	return &chunkHandle{chunk: chunk}
 }
 
-// PeekChunk returns the current cell snapshot for a chunk without side-effects.
-//
-// If an actor is already running its live state is returned. Otherwise the
-// configured Load callback is called to read persisted state directly from
-// storage — no actor goroutine is created. Returns nil for empty/unknown chunks.
-//
-// Use this from the subscribe handler so that viewing an empty chunk does not
-// spin up a goroutine that will only idle and then log a spurious hibernation.
+// PeekChunk returns the current cell snapshot without creating an actor.
+// Used by the subscribe handler so that viewing an empty chunk doesn't
+// start a pointless entry in the registry.
 func (r *Registry) PeekChunk(id ChunkID) []uint16 {
 	r.mu.RLock()
-	actor, exists := r.chunks[id]
+	state, exists := r.chunks[id]
 	r.mu.RUnlock()
 	if exists {
-		return actor.chunk.Snapshot()
+		return state.chunk.Snapshot()
 	}
 	if r.cfg.Load == nil {
 		return nil
@@ -144,41 +188,28 @@ func (r *Registry) PeekChunk(id ChunkID) []uint16 {
 	return chunk.Snapshot()
 }
 
-// hasCellsNearEdge reports whether any cell in cells is within reach (≤ 2 rows/cols)
-// of the face of this chunk that borders the neighbour at offset (dx, dy).
-// This avoids waking hibernated neighbours that could not possibly be affected.
-func hasCellsNearEdge(cells []uint16, dx, dy int64) bool {
-	const near = int64(2) // GoL birth range is 1; +1 for safety
-	for _, offset := range cells {
-		x := int64(offset % ChunkSize)
-		y := int64(offset / ChunkSize)
-		xOk := (dx == -1 && x <= near) || (dx == 1 && x >= ChunkSize-1-near) || dx == 0
-		yOk := (dy == -1 && y <= near) || (dy == 1 && y >= ChunkSize-1-near) || dy == 0
-		if xOk && yOk {
-			return true
-		}
-	}
-	return false
-}
-
-// TickAll advances every active chunk by one generation.
-// It must be called by an external timer (e.g. time.Ticker in main.go).
+// TickAll advances every active chunk by one generation and blocks until all
+// chunks have finished computing. This is the lockstep barrier: the external
+// ticker cannot fire again until every worker calls wg.Done().
 //
-// The sequence is:
-//  1. Snapshot every active chunk's cells.
-//  2. For each chunk that has cells near a boundary, wake (GetOrCreate) the
-//     neighbouring chunk and send it halo data so cross-boundary births work.
-//  3. Send a tick signal to every actor goroutine.
+// Sequence:
+//  1. Snapshot every active chunk's bitset rows.
+//  2. Distribute halo rows to neighbours that need them.
+//  3. Fan out one tickJob per chunk to the worker pool.
+//  4. Block on WaitGroup until all workers complete.
 func (r *Registry) TickAll(ctx context.Context) {
 	r.mu.RLock()
 	type entry struct {
 		id    ChunkID
-		actor *chunkActorImpl
-		cells []uint16
+		state *chunkState
+		rows  [ChunkSize]uint64
 	}
 	entries := make([]entry, 0, len(r.chunks))
-	for id, a := range r.chunks {
-		entries = append(entries, entry{id, a, a.chunk.Snapshot()})
+	rowsByID := make(map[ChunkID][ChunkSize]uint64, len(r.chunks))
+	for id, state := range r.chunks {
+		rows := state.chunk.Rows()
+		entries = append(entries, entry{id, state, rows})
+		rowsByID[id] = rows
 	}
 	r.mu.RUnlock()
 
@@ -189,46 +220,76 @@ func (r *Registry) TickAll(ctx context.Context) {
 		{-1, 1}, {0, 1}, {1, 1},
 	}
 
-	// Distribute halo data to neighbours.
-	// GetOrCreate is called only when the sending chunk actually has cells
-	// near the shared face — this prevents unconditionally waking all 8
-	// neighbours of every active chunk and avoids the hibernation spam.
+	// Build per-chunk halo maps from the pre-snapshotted rows.
+	// Only neighbours with cells near the shared face are included.
+	halosByChunk := make(map[ChunkID]map[ChunkID][ChunkSize]uint64, len(entries))
 	for _, e := range entries {
-		if len(e.cells) == 0 {
+		allZero := true
+		for _, row := range e.rows {
+			if row != 0 {
+				allZero = false
+				break
+			}
+		}
+		if allZero {
 			continue
 		}
 		for _, off := range neighbourOffsets {
-			if !hasCellsNearEdge(e.cells, off[0], off[1]) {
+			if !hasCellsNearEdge(e.rows, off[0], off[1]) {
 				continue
 			}
 			nid := ChunkID{X: e.id.X + off[0], Y: e.id.Y + off[1]}
-			neighbour := r.GetOrCreate(nid)
-			neighbour.ReceiveHalo(ctx, e.id, e.cells) //nolint:errcheck
+			// Wake the neighbour if needed so it is ticked this round.
+			r.GetOrCreate(nid) //nolint:errcheck
+			// Provide this chunk's rows as halo data for the neighbour.
+			if halosByChunk[nid] == nil {
+				halosByChunk[nid] = make(map[ChunkID][ChunkSize]uint64)
+			}
+			halosByChunk[nid][e.id] = e.rows
 		}
 	}
 
-	// Tick every actor and wait for all of them to finish before returning.
-	//
-	// The WaitGroup is the lockstep barrier: TickAll blocks here until every
-	// active chunk has completed generation N. Only then does the external
-	// ticker fire again, preventing any actor from seeing generation N+1
-	// halo data before it has finished computing generation N.
+	// Re-read the (possibly grown) chunk list after GetOrCreate calls.
 	r.mu.RLock()
-	allActors := make([]*chunkActorImpl, 0, len(r.chunks))
-	for _, a := range r.chunks {
-		allActors = append(allActors, a)
+	allStates := make([]*struct {
+		id    ChunkID
+		state *chunkState
+		rows  [ChunkSize]uint64
+	}, 0, len(r.chunks))
+	for id, state := range r.chunks {
+		rows, ok := rowsByID[id]
+		if !ok {
+			// Newly created this round — snapshot now.
+			rows = state.chunk.Rows()
+		}
+		allStates = append(allStates, &struct {
+			id    ChunkID
+			state *chunkState
+			rows  [ChunkSize]uint64
+		}{id, state, rows})
 	}
 	r.mu.RUnlock()
 
+	// Fan out jobs to the worker pool and wait for all to complete.
 	var wg sync.WaitGroup
-	wg.Add(len(allActors))
-	for _, a := range allActors {
-		a.Tick(ctx, &wg) //nolint:errcheck
+	wg.Add(len(allStates))
+	for _, s := range allStates {
+		select {
+		case <-ctx.Done():
+			wg.Done()
+			continue
+		case r.jobCh <- tickJob{
+			state:     s.state,
+			chunkRows: s.rows,
+			halos:     halosByChunk[s.id],
+			wg:        &wg,
+		}:
+		}
 	}
 	wg.Wait()
 }
 
-// evict removes the actor from the registry (called by the actor itself on hibernation).
+// evict removes a chunk from the registry (called on hibernation).
 func (r *Registry) evict(id ChunkID) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -238,176 +299,13 @@ func (r *Registry) evict(id ChunkID) {
 	}
 }
 
-func (a *chunkActorImpl) ProcessSpawn(ctx context.Context, x, y uint8) error {
-	select {
-	case a.spawnChan <- spawnReq{x, y}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (a *chunkActorImpl) ReceiveHalo(ctx context.Context, neighborID ChunkID, haloData []uint16) error {
-	select {
-	case a.haloChan <- haloReq{neighborID, haloData}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// Tick enqueues a tick signal carrying the WaitGroup that TickAll is blocking
-// on. The actor calls wg.Done() when it finishes computing the generation,
-// releasing TickAll's barrier.
-//
-// The default case handles the extremely unlikely race where GetOrCreate spun
-// up a brand-new actor between the halo phase and the tick phase of the same
-// TickAll call — that actor has no generation-N state to advance, so we skip
-// it and immediately release our count from the WaitGroup.
-func (a *chunkActorImpl) Tick(ctx context.Context, wg *sync.WaitGroup) error {
-	select {
-	case a.tickChan <- wg:
-		return nil
-	case <-ctx.Done():
-		wg.Done()
-		return ctx.Err()
-	default:
-		// tickChan is full: the previous tick hasn't been consumed yet.
-		// This should never happen under the barrier scheme (TickAll waits for
-		// wg.Wait() before the ticker fires again), but guard against it rather
-		// than blocking. Release the WaitGroup count so TickAll doesn't hang.
-		log.Printf("chunk (%d,%d): tick channel full, skipping generation (actor is behind)",
-			a.chunk.ID.X, a.chunk.ID.Y)
-		wg.Done()
-		return nil
-	}
-}
-
-// run is the actor's main event loop. It is the only goroutine that writes
-// to a.chunk, so internal locking is only needed on read paths shared with
-// the network layer (Snapshot / MarshalJSON).
-func (a *chunkActorImpl) run() {
-	// pendingHalos holds the latest edge data from each neighbouring chunk.
-	// Overwritten on every receipt; flushed after each tick.
-	pendingHalos := make(map[ChunkID][]uint16)
-
-	chunkBaseX := a.chunk.ID.X * ChunkSize
-	chunkBaseY := a.chunk.ID.Y * ChunkSize
-
-	idleTicks := 0
-
-	for {
-		select {
-		case req := <-a.spawnChan:
-			a.chunk.AddCell(req.x, req.y)
-			idleTicks = 0
-
-		case req := <-a.haloChan:
-			// Overwrite with the freshest data from this neighbour.
-			pendingHalos[req.neighborID] = req.haloData
-			idleTicks = 0
-
-		case wg := <-a.tickChan:
-			start := time.Now()
-
-			// Eagerly drain any halos that arrived concurrently with this tick
-			// signal. TickAll sends all halos before sending any ticks, so every
-			// halo for this round is already in the channel, but Go's select is
-			// non-deterministic — the tick case can fire before haloChan cases
-			// do. Draining here guarantees complete cross-chunk boundary data.
-		drainHalos:
-			for {
-				select {
-				case req := <-a.haloChan:
-					pendingHalos[req.neighborID] = req.haloData
-				default:
-					break drainHalos
-				}
-			}
-
-			// 1. Build the superset of all relevant cells in absolute coords.
-			//    Halo cells must be included for correct boundary behaviour.
-			allCells := make(map[Point]struct{})
-
-			for _, offset := range a.chunk.Snapshot() {
-				lx := int64(offset % ChunkSize)
-				ly := int64(offset / ChunkSize)
-				allCells[Point{X: chunkBaseX + lx, Y: chunkBaseY + ly}] = struct{}{}
-			}
-			for neighborID, haloOffsets := range pendingHalos {
-				nbx := neighborID.X * ChunkSize
-				nby := neighborID.Y * ChunkSize
-				for _, offset := range haloOffsets {
-					lx := int64(offset % ChunkSize)
-					ly := int64(offset / ChunkSize)
-					allCells[Point{X: nbx + lx, Y: nby + ly}] = struct{}{}
-				}
-			}
-
-			// 2. Evaluate Game of Life rules.
-			nextGen := Tick(allCells)
-
-			// 3. Write back only cells belonging to this chunk.
-			a.chunk.mu.Lock()
-			a.chunk.ActiveCells = make(map[uint16]struct{})
-			for pt := range nextGen {
-				lx := pt.X - chunkBaseX
-				ly := pt.Y - chunkBaseY
-				if lx >= 0 && lx < ChunkSize && ly >= 0 && ly < ChunkSize {
-					a.chunk.ActiveCells[uint16(ly)*ChunkSize+uint16(lx)] = struct{}{}
-				}
-			}
-			a.chunk.mu.Unlock()
-
-			// 4. Observe tick duration.
-			if m := a.registry.cfg.Metrics; m != nil {
-				m.TickDuration.Observe(float64(time.Since(start).Nanoseconds()) / 1e6)
-			}
-
-			// 5. Broadcast authoritative state to subscribed viewport clients.
-			if fn := a.registry.cfg.OnTick; fn != nil {
-				fn(a.chunk.ID, a.chunk.Snapshot())
-			}
-
-			// 6. Signal the barrier *before* hibernation checks so TickAll is never
-			//    held waiting on an actor that is about to exit.
-			wg.Done()
-
-			// 7. Reset halo buffers for the next tick cycle.
-			pendingHalos = make(map[ChunkID][]uint16)
-
-			// 8. Hibernation: an empty chunk with no subscribers and no pending
-			//    work is a candidate for graceful shutdown.
-			a.chunk.mu.RLock()
-			activeCount := len(a.chunk.ActiveCells)
-			a.chunk.mu.RUnlock()
-
-			hasSubs := a.registry.cfg.HasSubscribers != nil &&
-				a.registry.cfg.HasSubscribers(a.chunk.ID)
-			pendingWork := len(a.spawnChan) > 0 || len(a.haloChan) > 0
-
-			if activeCount == 0 && !hasSubs && !pendingWork {
-				idleTicks++
-				if idleTicks >= hibernationThreshold {
-					a.hibernate()
-					return
-				}
-			} else {
-				idleTicks = 0
-			}
-		}
-	}
-}
-
-// hibernate persists the chunk to cold storage and removes the actor from the
-// registry, freeing its goroutine stack and in-memory state.
-func (a *chunkActorImpl) hibernate() {
-	if fn := a.registry.cfg.Persist; fn != nil {
-		if err := fn(a.chunk); err != nil {
+// hibernate persists the chunk to cold storage and evicts it from memory.
+func (r *Registry) hibernate(chunk *Chunk) {
+	if fn := r.cfg.Persist; fn != nil {
+		if err := fn(chunk); err != nil {
 			log.Printf("chunk (%d,%d): persist failed before hibernation: %v",
-				a.chunk.ID.X, a.chunk.ID.Y, err)
+				chunk.ID.X, chunk.ID.Y, err)
 		}
 	}
-	// Hibernation is normal lifecycle management — not logged at INFO level.
-	a.registry.evict(a.chunk.ID)
+	r.evict(chunk.ID)
 }

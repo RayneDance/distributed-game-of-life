@@ -53,7 +53,7 @@ func (r *RedisEngine) SaveChunk(ctx context.Context, chunk *simulation.Chunk) er
 // Returns an empty chunk if no state exists for the given ID.
 func (r *RedisEngine) LoadChunk(ctx context.Context, id simulation.ChunkID) (*simulation.Chunk, error) {
 	key := chunkKey(id)
-	
+
 	data, err := r.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if err == redis.Nil {
@@ -75,13 +75,8 @@ func (r *RedisEngine) LoadChunk(ctx context.Context, id simulation.ChunkID) (*si
 		return nil, fmt.Errorf("failed to unmarshal chunk data: %w", err)
 	}
 
-	// Reconstruct the chunk
+	// Reconstruct the chunk from the persisted offset list.
 	chunk := simulation.NewChunk(alias.X, alias.Y)
-	for _, offset := range alias.Cells {
-		x := uint8(offset % simulation.ChunkSize)
-		y := uint8(offset / simulation.ChunkSize)
-		chunk.AddCell(x, y)
-	}
-
+	chunk.SetRows(simulation.OffsetsToRows(alias.Cells))
 	return chunk, nil
 }
