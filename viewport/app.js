@@ -79,6 +79,38 @@ const pendingCommands = [];
 // Assigned by the editor IIFE below.
 let openEditor = () => { };
 
+// ─── Custom Piece Persistence (localStorage) ──────────────────────────────────
+const CUSTOM_PIECES_KEY = 'gol-custom-pieces';
+
+// Persist the current set of custom pieces to localStorage.
+function saveCustomPieces() {
+    try {
+        const data = {};
+        for (const key of customPieces) {
+            if (catalog[key]) data[key] = catalog[key];
+        }
+        localStorage.setItem(CUSTOM_PIECES_KEY, JSON.stringify(data));
+    } catch (e) {
+        console.warn('Failed to save custom pieces to localStorage:', e);
+    }
+}
+
+// Restore custom pieces from localStorage into catalog + customPieces.
+// Call this before (or after) fetchCatalog so saved pieces survive refreshes.
+function loadCustomPieces() {
+    try {
+        const raw = localStorage.getItem(CUSTOM_PIECES_KEY);
+        if (!raw) return;
+        const data = JSON.parse(raw);
+        for (const [key, def] of Object.entries(data)) {
+            catalog[key] = def;
+            customPieces.add(key);
+        }
+    } catch (e) {
+        console.warn('Failed to load custom pieces from localStorage:', e);
+    }
+}
+
 // ─── Rate Limit Budget Tracker ───────────────────────────────────────────────
 // Mirrors server config: player bucket = 50 max, 5 tokens/sec refill.
 // Tracked client-side so the bar is instant with no extra server round-trips.
@@ -189,6 +221,9 @@ async function fetchCatalog() {
     try {
         const res = await fetch('/catalog');
         catalog = await res.json();
+        // Re-merge saved custom pieces: fetchCatalog replaces the catalog
+        // object entirely so we re-apply localStorage data on top.
+        loadCustomPieces();
         buildPanel();
     } catch (e) {
         console.error('Failed to fetch shape catalog:', e);
@@ -270,6 +305,7 @@ function populateShapes() {
                 if (selectedShape === key) selectShape(null);
                 delete catalog[key];
                 customPieces.delete(key);
+                saveCustomPieces();
                 buildPanel();
                 showToast(`"${def.label}" deleted`, '#ff6666');
             });
@@ -1095,6 +1131,7 @@ draw();
         // Add / overwrite in the client catalog and mark as custom.
         catalog[key] = { label, category, cells };
         customPieces.add(key);
+        saveCustomPieces();
 
         // If editing the currently selected shape, refresh the ghost.
         if (selectedShape === key) {
@@ -1107,4 +1144,5 @@ draw();
     });
 })();
 
+loadCustomPieces();
 fetchCatalog();
